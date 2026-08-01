@@ -1,0 +1,38 @@
+# Build directories
+build/
+build32/
+build64/
+bin/
+
+# Visual Studio & IDE files
+.vs/
+*.vcxproj.user
+*.vcxproj.filters
+*.vcxproj.user
+*.VC.db
+*.opendb
+*.suo
+*.user
+
+# CMake build outputs & cache
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.dir/
+
+# Compiled objects and libraries
+*.obj
+*.lib
+*.exp
+*.pch
+*.pdb
+*.idb
+*.ilk
+*.asi
+*.dll
+
+# OS generated files
+Thumbs.db
+Desktop.ini
+.DS_Store

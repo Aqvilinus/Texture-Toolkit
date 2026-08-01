@@ -1,0 +1,569 @@
+#include "D3D11Hook.h"
+#include "HookManager.h"
+#include "IATHook.h"
+#include "TextureManager.h"
+#include "TextureToolkitUI.h"
+#include "Config.h"
+#include "Logger.h"
+#include <imgui.h>
+#include "imgui_impl_win32.h"
+#include "imgui_impl_dx11.h"
+#include <vector>
+
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+
+namespace TextureToolkit
+{
+    static WNDPROC g_orig_wndproc = nullptr;
+
+    static LRESULT CALLBACK Hooked_WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
+    {
+        if (TextureToolkitUI::is_visible())
+        {
+            if (msg == WM_INPUT)
+                return 0; // Block raw input (mouse click/move) from game
+
+            if (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam))
+                return true;
+
+            // Block keyboard and mouse from reaching the game when UI is open
+            if (msg >= WM_KEYFIRST && msg <= WM_KEYLAST) 
+                return 0;
+            if (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST)
+            {
+                // Let mouse movement pass through so game center-locking doesn't freak out, but block clicks
+                if (msg != WM_MOUSEMOVE) return 0;
+            }
+        }
+
+        return CallWindowProc(g_orig_wndproc, hWnd, msg, wParam, lParam);
+    }
+
+    struct MappedResourceData
+    {
+        ID3D11Resource *resource = nullptr;
+        UINT subresource = 0;
+        D3D11_MAPPED_SUBRESOURCE mapped = {};
+    };
+
+    static thread_local std::unordered_map<ID3D11Resource *, MappedResourceData> s_mapped_resources;
+    thread_local bool D3D11Hook::s_inside_injection = false;
+
+    D3D11Hook &D3D11Hook::get()
+    {
+        static D3D11Hook instance;
+        return instance;
+    }
+
+    D3D11Hook::~D3D11Hook()
+    {
+        shutdown();
+    }
+
+    bool D3D11Hook::init()
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (m_initialized)
+            return true;
+
+        HMODULE d3d11_module = GetModuleHandleA("d3d11.dll");
+        if (d3d11_module == nullptr)
+        {
+            d3d11_module = LoadLibraryA("d3d11.dll");
+        }
+
+        HMODULE dxgi_module = GetModuleHandleA("dxgi.dll");
+        if (dxgi_module == nullptr)
+        {
+            dxgi_module = LoadLibraryA("dxgi.dll");
+        }
+
+        if (d3d11_module != nullptr)
+        {
+            void *pD3D11CreateDeviceAndSwapChain = reinterpret_cast<void *>(GetProcAddress(d3d11_module, "D3D11CreateDeviceAndSwapChain"));
+            if (pD3D11CreateDeviceAndSwapChain != nullptr)
+            {
+                HookManager::get().create_hook(pD3D11CreateDeviceAndSwapChain, &Hooked_D3D11CreateDeviceAndSwapChain, reinterpret_cast<void **>(&m_orig_create_device_and_swapchain));
+                IATHook::hook_all_modules("d3d11.dll", "D3D11CreateDeviceAndSwapChain", &Hooked_D3D11CreateDeviceAndSwapChain, reinterpret_cast<void **>(&m_orig_create_device_and_swapchain));
+                Logger::get().info("[D3D11Hook] D3D11CreateDeviceAndSwapChain API & IAT hooks installed successfully.");
+            }
+
+            void *pD3D11CreateDevice = reinterpret_cast<void *>(GetProcAddress(d3d11_module, "D3D11CreateDevice"));
+            if (pD3D11CreateDevice != nullptr)
+            {
+                HookManager::get().create_hook(pD3D11CreateDevice, &Hooked_D3D11CreateDevice, reinterpret_cast<void **>(&m_orig_create_device));
+                IATHook::hook_all_modules("d3d11.dll", "D3D11CreateDevice", &Hooked_D3D11CreateDevice, reinterpret_cast<void **>(&m_orig_create_device));
+                Logger::get().info("[D3D11Hook] D3D11CreateDevice API & IAT hooks installed successfully.");
+            }
+        }
+
+        if (dxgi_module != nullptr)
+        {
+            void *pCreateDXGIFactory = reinterpret_cast<void *>(GetProcAddress(dxgi_module, "CreateDXGIFactory"));
+            if (pCreateDXGIFactory != nullptr)
+            {
+                HookManager::get().create_hook(pCreateDXGIFactory, &Hooked_CreateDXGIFactory, reinterpret_cast<void **>(&m_orig_create_dxgi_factory));
+                IATHook::hook_all_modules("dxgi.dll", "CreateDXGIFactory", &Hooked_CreateDXGIFactory, reinterpret_cast<void **>(&m_orig_create_dxgi_factory));
+                Logger::get().info("[D3D11Hook] CreateDXGIFactory API & IAT hooks installed successfully.");
+            }
+
+            void *pCreateDXGIFactory1 = reinterpret_cast<void *>(GetProcAddress(dxgi_module, "CreateDXGIFactory1"));
+            if (pCreateDXGIFactory1 != nullptr)
+            {
+                HookManager::get().create_hook(pCreateDXGIFactory1, &Hooked_CreateDXGIFactory1, reinterpret_cast<void **>(&m_orig_create_dxgi_factory1));
+                IATHook::hook_all_modules("dxgi.dll", "CreateDXGIFactory1", &Hooked_CreateDXGIFactory1, reinterpret_cast<void **>(&m_orig_create_dxgi_factory1));
+                Logger::get().info("[D3D11Hook] CreateDXGIFactory1 API & IAT hooks installed successfully.");
+            }
+        }
+
+        m_initialized = true;
+        return true;
+    }
+
+    void D3D11Hook::hook_swapchain(IDXGISwapChain *swapchain)
+    {
+        if (swapchain == nullptr || m_orig_present != nullptr)
+            return;
+
+        void **sc_vtable = *reinterpret_cast<void ***>(swapchain);
+        void *present_addr = sc_vtable[8]; // IDXGISwapChain::Present is index 8
+
+        HookManager::get().create_hook(present_addr, &Hooked_Present, reinterpret_cast<void **>(&m_orig_present));
+        Logger::get().info("[D3D11Hook] REAL GAME SWAPCHAIN INTERCEPTED! Present hook active.");
+    }
+
+    void D3D11Hook::hook_context(ID3D11DeviceContext *context)
+    {
+        if (context == nullptr || m_orig_ps_set_shader_resources != nullptr)
+            return;
+
+        void **ctx_vtable = *reinterpret_cast<void ***>(context);
+
+        void *ps_set_srv_addr = ctx_vtable[8]; // PSSetShaderResources is index 8
+        void *map_addr = ctx_vtable[14]; // Map is index 14
+        void *unmap_addr = ctx_vtable[15]; // Unmap is index 15
+
+        HookManager::get().create_hook(ps_set_srv_addr, &Hooked_PSSetShaderResources, reinterpret_cast<void **>(&m_orig_ps_set_shader_resources));
+        HookManager::get().create_hook(map_addr, &Hooked_Map, reinterpret_cast<void **>(&m_orig_map));
+        HookManager::get().create_hook(unmap_addr, &Hooked_Unmap, reinterpret_cast<void **>(&m_orig_unmap));
+
+        Logger::get().info("[D3D11Hook] REAL GAME DEVICE CONTEXT INTERCEPTED! PSSetShaderResources, Map, Unmap hooks active.");
+    }
+
+    void D3D11Hook::hook_dxgi_factory(IDXGIFactory *factory)
+    {
+        if (factory == nullptr || m_orig_create_swapchain != nullptr)
+            return;
+
+        void **factory_vtable = *reinterpret_cast<void ***>(factory);
+        void *create_swapchain_addr = factory_vtable[10]; // IDXGIFactory::CreateSwapChain is index 10
+
+        HookManager::get().create_hook(create_swapchain_addr, &Hooked_CreateSwapChain, reinterpret_cast<void **>(&m_orig_create_swapchain));
+        Logger::get().info("[D3D11Hook] Intercepted IDXGIFactory::CreateSwapChain (VTable index 10).");
+    }
+
+    void D3D11Hook::shutdown()
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (!m_initialized)
+            return;
+
+        if (m_imgui_initialized)
+        {
+            ImGui_ImplDX11_Shutdown();
+            ImGui_ImplWin32_Shutdown();
+            ImGui::DestroyContext();
+            m_imgui_initialized = false;
+        }
+
+        if (m_hwnd && g_orig_wndproc)
+        {
+            SetWindowLongPtr(m_hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(g_orig_wndproc));
+            g_orig_wndproc = nullptr;
+        }
+
+        m_initialized = false;
+    }
+
+    void D3D11Hook::hook_device(ID3D11Device *device)
+    {
+        if (device == nullptr || m_orig_create_texture2d != nullptr)
+            return;
+
+        void **device_vtable = *reinterpret_cast<void ***>(device);
+        void *create_tex2d_addr = device_vtable[5]; // ID3D11Device::CreateTexture2D is index 5
+
+        HookManager::get().create_hook(create_tex2d_addr, &Hooked_CreateTexture2D, reinterpret_cast<void **>(&m_orig_create_texture2d));
+        Logger::get().info("[D3D11Hook] REAL GAME DEVICE INTERCEPTED! CreateTexture2D hook active.");
+    }
+
+    HRESULT STDMETHODCALLTYPE D3D11Hook::Hooked_CreateTexture2D(ID3D11Device *device, const D3D11_TEXTURE2D_DESC *pDesc, const D3D11_SUBRESOURCE_DATA *pInitialData, ID3D11Texture2D **ppTexture2D)
+    {
+        // Skip tracking when we're inside injection (creating replacement textures)
+        if (s_inside_injection)
+            return get().m_orig_create_texture2d(device, pDesc, pInitialData, ppTexture2D);
+
+        static int s_logged_creations = 0;
+        if (pDesc != nullptr && s_logged_creations < 50)
+        {
+            s_logged_creations++;
+            std::string has_init_data = (pInitialData != nullptr) ? "Yes" : "No";
+            Logger::get().info("[D3D11Hook] Hooked_CreateTexture2D: Width=" + std::to_string(pDesc->Width) + ", Height=" + std::to_string(pDesc->Height) + ", Format=" + std::to_string(static_cast<uint32_t>(pDesc->Format)) + ", InitialData=" + has_init_data + ", Usage=" + std::to_string(pDesc->Usage) + ", BindFlags=" + std::to_string(pDesc->BindFlags));
+        }
+
+        HRESULT hr = get().m_orig_create_texture2d(device, pDesc, pInitialData, ppTexture2D);
+
+        if (SUCCEEDED(hr) && ppTexture2D != nullptr && *ppTexture2D != nullptr && pDesc != nullptr)
+        {
+            if (pInitialData != nullptr && pInitialData->pSysMem != nullptr && pDesc->MipLevels > 0)
+            {
+                // Only track static shader resource textures
+                if (pDesc->Usage == D3D11_USAGE_DEFAULT || pDesc->Usage == D3D11_USAGE_IMMUTABLE)
+                {
+                    if (pDesc->BindFlags & D3D11_BIND_SHADER_RESOURCE)
+                    {
+                        if (s_logged_creations < 50)
+                        {
+                            Logger::get().info("[D3D11Hook] Hooked_CreateTexture2D: Registering texture!");
+                        }
+                        TextureManager::get().register_unmap_texture11(
+                            device,
+                            *ppTexture2D,
+                            pInitialData->pSysMem,
+                            pDesc->Width,
+                            pDesc->Height,
+                            pDesc->Format,
+                            pInitialData->SysMemPitch
+                        );
+                    }
+                }
+            }
+        }
+
+        return hr;
+    }
+
+    void D3D11Hook::init_imgui(IDXGISwapChain *swapchain)
+    {
+        if (m_imgui_initialized || swapchain == nullptr)
+            return;
+
+        if (FAILED(swapchain->GetDevice(__uuidof(ID3D11Device), reinterpret_cast<void **>(&m_device))))
+            return;
+
+        hook_device(m_device);
+        m_device->GetImmediateContext(&m_context);
+
+        DXGI_SWAP_CHAIN_DESC desc = {};
+        swapchain->GetDesc(&desc);
+        m_hwnd = desc.OutputWindow;
+
+        if (m_hwnd == nullptr)
+        {
+            m_hwnd = GetActiveWindow();
+        }
+
+        if (m_hwnd != nullptr)
+        {
+            g_orig_wndproc = reinterpret_cast<WNDPROC>(SetWindowLongPtr(m_hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(Hooked_WndProc)));
+        }
+
+        ImGui::CreateContext();
+        ImGui::StyleColorsDark();
+
+        wchar_t exe_path[MAX_PATH] = L"";
+        GetModuleFileNameW(nullptr, exe_path, ARRAYSIZE(exe_path));
+        std::filesystem::path game_dir = std::filesystem::path(exe_path).parent_path();
+        std::filesystem::path imgui_ini = game_dir / "TT" / "imgui.ini";
+        
+        static std::string ini_path_str = imgui_ini.string();
+        ImGui::GetIO().IniFilename = ini_path_str.c_str();
+
+        ImGui_ImplWin32_Init(m_hwnd);
+        ImGui_ImplDX11_Init(m_device, m_context);
+
+        m_imgui_initialized = true;
+        Logger::get().info("[D3D11Hook] Dear ImGui initialized natively for real game DirectX 11 device.");
+    }
+
+    void D3D11Hook::render_imgui(IDXGISwapChain *swapchain)
+    {
+        if (!m_imgui_initialized)
+        {
+            init_imgui(swapchain);
+        }
+
+        if (!m_imgui_initialized)
+            return;
+
+        uint32_t toggle_key = ConfigManager::get().get_config().hotkey;
+        static bool s_key_was_down = false;
+        bool key_is_down = (GetAsyncKeyState(toggle_key) & 0x8000) != 0;
+        if (key_is_down && !s_key_was_down)
+        {
+            TextureToolkitUI::toggle_visibility();
+            bool visible = TextureToolkitUI::is_visible();
+            Logger::get().info("[UI] Direct hotkey poll triggered UI toggle. Visibility = " + std::to_string(visible));
+            
+            static bool s_cursor_visible = false;
+            if (visible && !s_cursor_visible) {
+                while (ShowCursor(TRUE) < 0);
+                s_cursor_visible = true;
+            } else if (!visible && s_cursor_visible) {
+                while (ShowCursor(FALSE) >= 0);
+                s_cursor_visible = false;
+            }
+        }
+        s_key_was_down = key_is_down;
+
+        TextureManager::get().on_frame();
+
+        extern bool g_inside_imgui_render;
+        g_inside_imgui_render = true;
+
+        if (TextureToolkitUI::is_visible())
+        {
+            SetCursor(LoadCursor(nullptr, IDC_ARROW));
+        }
+
+        ImGui_ImplDX11_NewFrame();
+        ImGui_ImplWin32_NewFrame();
+        ImGui::NewFrame();
+
+        ImGui::GetIO().MouseDrawCursor = TextureToolkitUI::is_visible();
+
+        TextureToolkitUI::draw_ui(nullptr);
+
+        ImGui::EndFrame();
+        ImGui::Render();
+
+        g_inside_imgui_render = false;
+
+        ID3D11RenderTargetView *rtv = nullptr;
+        ID3D11Texture2D *back_buffer = nullptr;
+        if (SUCCEEDED(swapchain->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<void **>(&back_buffer))))
+        {
+            m_device->CreateRenderTargetView(back_buffer, nullptr, &rtv);
+            back_buffer->Release();
+        }
+
+        if (rtv != nullptr)
+        {
+            m_context->OMSetRenderTargets(1, &rtv, nullptr);
+            ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+            rtv->Release();
+        }
+    }
+
+    HRESULT WINAPI D3D11Hook::Hooked_D3D11CreateDeviceAndSwapChain(
+        IDXGIAdapter *pAdapter, D3D_DRIVER_TYPE DriverType, HMODULE Software, UINT Flags,
+        const D3D_FEATURE_LEVEL *pFeatureLevels, UINT FeatureLevels, UINT SDKVersion,
+        const DXGI_SWAP_CHAIN_DESC *pSwapChainDesc, IDXGISwapChain **ppSwapChain,
+        ID3D11Device **ppDevice, D3D_FEATURE_LEVEL *pFeatureLevel, ID3D11DeviceContext **ppImmediateContext)
+    {
+        Logger::get().info("[D3D11Hook] D3D11CreateDeviceAndSwapChain was called by the game!");
+        HRESULT hr = get().m_orig_create_device_and_swapchain(
+            pAdapter, DriverType, Software, Flags, pFeatureLevels, FeatureLevels, SDKVersion,
+            pSwapChainDesc, ppSwapChain, ppDevice, pFeatureLevel, ppImmediateContext);
+
+        if (SUCCEEDED(hr))
+        {
+            if (ppSwapChain != nullptr && *ppSwapChain != nullptr)
+            {
+                get().hook_swapchain(*ppSwapChain);
+            }
+            if (ppImmediateContext != nullptr && *ppImmediateContext != nullptr)
+            {
+                get().hook_context(*ppImmediateContext);
+            }
+            if (ppDevice != nullptr && *ppDevice != nullptr)
+            {
+                get().hook_device(*ppDevice);
+            }
+        }
+        else
+        {
+            Logger::get().error("[D3D11Hook] D3D11CreateDeviceAndSwapChain failed with HRESULT: " + std::to_string(hr));
+        }
+
+        return hr;
+    }
+
+    HRESULT WINAPI D3D11Hook::Hooked_D3D11CreateDevice(
+        IDXGIAdapter *pAdapter, D3D_DRIVER_TYPE DriverType, HMODULE Software, UINT Flags,
+        const D3D_FEATURE_LEVEL *pFeatureLevels, UINT FeatureLevels, UINT SDKVersion,
+        ID3D11Device **ppDevice, D3D_FEATURE_LEVEL *pFeatureLevel, ID3D11DeviceContext **ppImmediateContext)
+    {
+        Logger::get().info("[D3D11Hook] D3D11CreateDevice was called by the game!");
+        HRESULT hr = get().m_orig_create_device(
+            pAdapter, DriverType, Software, Flags, pFeatureLevels, FeatureLevels, SDKVersion,
+            ppDevice, pFeatureLevel, ppImmediateContext);
+
+        if (SUCCEEDED(hr))
+        {
+            if (ppImmediateContext != nullptr && *ppImmediateContext != nullptr)
+            {
+                get().hook_context(*ppImmediateContext);
+            }
+            if (ppDevice != nullptr && *ppDevice != nullptr)
+            {
+                get().hook_device(*ppDevice);
+            }
+        }
+        else
+        {
+            Logger::get().error("[D3D11Hook] D3D11CreateDevice failed with HRESULT: " + std::to_string(hr));
+        }
+
+        return hr;
+    }
+
+    HRESULT WINAPI D3D11Hook::Hooked_CreateDXGIFactory(REFIID riid, void **ppFactory)
+    {
+        Logger::get().info("[D3D11Hook] CreateDXGIFactory was called by the game!");
+        HRESULT hr = E_FAIL;
+        if (get().m_orig_create_dxgi_factory)
+        {
+            hr = get().m_orig_create_dxgi_factory(riid, ppFactory);
+        }
+
+        if (SUCCEEDED(hr) && ppFactory != nullptr && *ppFactory != nullptr)
+        {
+            get().hook_dxgi_factory(static_cast<IDXGIFactory *>(*ppFactory));
+        }
+        return hr;
+    }
+
+    HRESULT WINAPI D3D11Hook::Hooked_CreateDXGIFactory1(REFIID riid, void **ppFactory)
+    {
+        Logger::get().info("[D3D11Hook] CreateDXGIFactory1 was called by the game!");
+        HRESULT hr = E_FAIL;
+        if (get().m_orig_create_dxgi_factory1)
+        {
+            hr = get().m_orig_create_dxgi_factory1(riid, ppFactory);
+        }
+
+        if (SUCCEEDED(hr) && ppFactory != nullptr && *ppFactory != nullptr)
+        {
+            get().hook_dxgi_factory(static_cast<IDXGIFactory *>(*ppFactory));
+        }
+        return hr;
+    }
+
+    HRESULT STDMETHODCALLTYPE D3D11Hook::Hooked_CreateSwapChain(IDXGIFactory *factory, IUnknown *pDevice, DXGI_SWAP_CHAIN_DESC *pDesc, IDXGISwapChain **ppSwapChain)
+    {
+        Logger::get().info("[D3D11Hook] IDXGIFactory::CreateSwapChain was called by the game!");
+        HRESULT hr = get().m_orig_create_swapchain(factory, pDevice, pDesc, ppSwapChain);
+
+        if (SUCCEEDED(hr) && ppSwapChain != nullptr && *ppSwapChain != nullptr)
+        {
+            get().hook_swapchain(*ppSwapChain);
+        }
+        return hr;
+    }
+
+    HRESULT STDMETHODCALLTYPE D3D11Hook::Hooked_Present(IDXGISwapChain *swapchain, UINT SyncInterval, UINT Flags)
+    {
+        get().m_swapchain = swapchain;
+        get().render_imgui(swapchain);
+        return get().m_orig_present(swapchain, SyncInterval, Flags);
+    }
+
+    void STDMETHODCALLTYPE D3D11Hook::Hooked_PSSetShaderResources(ID3D11DeviceContext *context, UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews)
+    {
+        if (ppShaderResourceViews == nullptr || NumViews == 0)
+        {
+            get().m_orig_ps_set_shader_resources(context, StartSlot, NumViews, ppShaderResourceViews);
+            return;
+        }
+
+        static int s_logged_ps_sets = 0;
+        if (s_logged_ps_sets < 20)
+        {
+            s_logged_ps_sets++;
+            Logger::get().info("[D3D11Hook] Hooked_PSSetShaderResources: NumViews=" + std::to_string(NumViews) + ", first SRV=0x" + std::to_string(reinterpret_cast<uintptr_t>(ppShaderResourceViews[0])));
+        }
+
+        std::vector<ID3D11ShaderResourceView *> replaced_views(NumViews);
+        for (UINT i = 0; i < NumViews; ++i)
+        {
+            replaced_views[i] = TextureManager::get().get_replacement_srv11(ppShaderResourceViews[i]);
+        }
+
+        get().m_orig_ps_set_shader_resources(context, StartSlot, NumViews, replaced_views.data());
+    }
+
+    HRESULT STDMETHODCALLTYPE D3D11Hook::Hooked_Map(ID3D11DeviceContext *context, ID3D11Resource *pResource, UINT Subresource, D3D11_MAP MapType, UINT MapFlags, D3D11_MAPPED_SUBRESOURCE *pMappedResource)
+    {
+        HRESULT hr = get().m_orig_map(context, pResource, Subresource, MapType, MapFlags, pMappedResource);
+
+        if (SUCCEEDED(hr) && Subresource == 0 && pMappedResource != nullptr && pMappedResource->pData != nullptr)
+        {
+            static int s_logged_maps = 0;
+            if (s_logged_maps < 20)
+            {
+                s_logged_maps++;
+                Logger::get().info("[D3D11Hook] Hooked_Map: resource=0x" + std::to_string(reinterpret_cast<uintptr_t>(pResource)));
+            }
+
+            MappedResourceData data;
+            data.resource = pResource;
+            data.subresource = Subresource;
+            data.mapped = *pMappedResource;
+
+            s_mapped_resources[pResource] = data;
+        }
+
+        return hr;
+    }
+
+    void STDMETHODCALLTYPE D3D11Hook::Hooked_Unmap(ID3D11DeviceContext *context, ID3D11Resource *pResource, UINT Subresource)
+    {
+        if (Subresource == 0)
+        {
+            auto it = s_mapped_resources.find(pResource);
+            if (it != s_mapped_resources.end())
+            {
+                MappedResourceData &data = it->second;
+
+                D3D11_RESOURCE_DIMENSION dim;
+                pResource->GetType(&dim);
+
+                if (dim == D3D11_RESOURCE_DIMENSION_TEXTURE2D)
+                {
+                    ID3D11Texture2D *tex = static_cast<ID3D11Texture2D *>(pResource);
+                    D3D11_TEXTURE2D_DESC desc = {};
+                    tex->GetDesc(&desc);
+
+                    static int s_logged_unmaps = 0;
+                    if (s_logged_unmaps < 20)
+                    {
+                        s_logged_unmaps++;
+                        Logger::get().info("[D3D11Hook] Hooked_Unmap: Registering texture=0x" + std::to_string(reinterpret_cast<uintptr_t>(pResource)));
+                    }
+
+                    ID3D11Device *device = nullptr;
+                    context->GetDevice(&device);
+
+                    if (device != nullptr)
+                    {
+                        TextureManager::get().register_unmap_texture11(
+                            device,
+                            pResource,
+                            data.mapped.pData,
+                            desc.Width,
+                            desc.Height,
+                            desc.Format,
+                            data.mapped.RowPitch
+                        );
+                        device->Release();
+                    }
+                }
+
+                s_mapped_resources.erase(it);
+            }
+        }
+
+        get().m_orig_unmap(context, pResource, Subresource);
+    }
+}

@@ -1,0 +1,94 @@
+#include "Config.h"
+#include "Logger.h"
+#include <fstream>
+#include <sstream>
+
+namespace TextureToolkit
+{
+    ConfigManager &ConfigManager::get()
+    {
+        static ConfigManager instance;
+        return instance;
+    }
+
+    void ConfigManager::init(const std::filesystem::path &game_dir)
+    {
+        m_ini_path = game_dir / "TT" / "TextureToolkit.ini";
+        load();
+    }
+
+    void ConfigManager::load()
+    {
+        if (!std::filesystem::exists(m_ini_path))
+        {
+            save(); // Auto-generate default INI file
+            return;
+        }
+
+        wchar_t ini_w[MAX_PATH];
+        wcscpy_s(ini_w, m_ini_path.wstring().c_str());
+
+        // Hotkey
+        wchar_t hotkey_str[32] = L"";
+        GetPrivateProfileStringW(L"TextureToolkit", L"HotKey", L"0x2D", hotkey_str, 32, ini_w);
+        try
+        {
+            std::wstring hs(hotkey_str);
+            m_config.hotkey = static_cast<uint32_t>(std::stoul(hs, nullptr, 16));
+        }
+        catch (...)
+        {
+            m_config.hotkey = VK_INSERT;
+        }
+
+        // Directories
+        wchar_t dump_str[MAX_PATH] = L"";
+        GetPrivateProfileStringW(L"TextureToolkit", L"DumpDir", L"TT/dump", dump_str, MAX_PATH, ini_w);
+        m_config.dump_dir = dump_str;
+
+        wchar_t inject_str[MAX_PATH] = L"";
+        GetPrivateProfileStringW(L"TextureToolkit", L"InjectDir", L"TT/inject", inject_str, MAX_PATH, ini_w);
+        m_config.inject_dir = inject_str;
+
+        // Toggles
+        m_config.enable_injection = GetPrivateProfileIntW(L"TextureToolkit", L"EnableInjection", 1, ini_w) != 0;
+        m_config.auto_dump = GetPrivateProfileIntW(L"TextureToolkit", L"AutoDump", 0, ini_w) != 0;
+        m_config.filter_small_textures = GetPrivateProfileIntW(L"TextureToolkit", L"FilterSmallTextures", 1, ini_w) != 0;
+        m_config.show_current_frame_only = GetPrivateProfileIntW(L"TextureToolkit", L"ShowCurrentFrameOnly", 0, ini_w) != 0;
+
+        // OSD
+        m_config.show_osd_banner = GetPrivateProfileIntW(L"TextureToolkit", L"ShowOSDBanner", 1, ini_w) != 0;
+
+        Logger::get().info("[ConfigManager] Configuration loaded from " + m_ini_path.string());
+    }
+
+    void ConfigManager::save()
+    {
+        std::error_code ec;
+        std::filesystem::create_directories(m_ini_path.parent_path(), ec);
+
+        std::ofstream file(m_ini_path, std::ios::out | std::ios::trunc);
+        if (!file.is_open())
+            return;
+
+        std::ostringstream ss;
+        ss << "0x" << std::hex << std::uppercase << m_config.hotkey;
+
+        file << "[TextureToolkit]\n"
+             << "; Virtual Key Code for UI Toggle (0x2D = INSERT, 0x24 = HOME, 0x74 = F5)\n"
+             << "HotKey=" << ss.str() << "\n\n"
+             << "; Folder Locations\n"
+             << "DumpDir=" << m_config.dump_dir.string() << "\n"
+             << "InjectDir=" << m_config.inject_dir.string() << "\n\n"
+             << "; Feature Toggles\n"
+             << "EnableInjection=" << (m_config.enable_injection ? 1 : 0) << "\n"
+             << "AutoDump=" << (m_config.auto_dump ? 1 : 0) << "\n"
+             << "FilterSmallTextures=" << (m_config.filter_small_textures ? 1 : 0) << "\n"
+             << "ShowCurrentFrameOnly=" << (m_config.show_current_frame_only ? 1 : 0) << "\n\n"
+             << "; On-Screen Display (OSD)\n"
+             << "ShowOSDBanner=" << (m_config.show_osd_banner ? 1 : 0) << "\n";
+
+        file.close();
+        Logger::get().info("[ConfigManager] Default configuration created at " + m_ini_path.string());
+    }
+}
