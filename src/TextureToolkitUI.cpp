@@ -268,12 +268,16 @@ namespace TextureToolkit
         // Toolbar: toggles and folder shortcuts. Toggling any option persists to the INI.
         bool changed = false;
         changed |= ImGui::Checkbox("Injection", &tm.enable_injection);
+        ImGui::SetItemTooltip("Replace textures that have a matching DDS in TT/inject.");
         ImGui::SameLine();
         changed |= ImGui::Checkbox("Auto-dump", &tm.auto_dump);
+        ImGui::SetItemTooltip("Save every texture to TT/dump as it loads.");
         ImGui::SameLine();
         changed |= ImGui::Checkbox("Skip < 16px", &tm.filter_small_textures);
+        ImGui::SetItemTooltip("Ignore textures smaller than 16x16.");
         ImGui::SameLine();
         changed |= ImGui::Checkbox("Scene only", &tm.show_current_frame_only);
+        ImGui::SetItemTooltip("Show only textures drawn in the current scene.");
         if (changed)
         {
             Configuration &cfg = ConfigManager::get().get_config();
@@ -289,24 +293,22 @@ namespace TextureToolkit
             tm.rescan_injected();
             SetStatusMessage("Rescanned TT/inject for DDS replacements.");
         }
+        ImGui::SetItemTooltip("Rescan TT/inject and reload the replacement DDS files.");
         ImGui::SameLine();
         if (ImGui::Button("Dump all"))
         {
             size_t n = tm.dump_all(tm.show_current_frame_only);
             SetStatusMessage("Dump-all queued " + std::to_string(n) + (tm.show_current_frame_only ? " active" : " tracked") + " texture(s); written as they draw.");
         }
+        ImGui::SetItemTooltip("Dump every tracked texture, or just the current scene when Scene only is ticked.\nEach is written the next time it is drawn.");
         ImGui::SameLine();
-        if (ImGui::Button("Clear list"))
-        {
-            tm.clear_tracked();
-            SetStatusMessage("Cleared the tracked texture list.");
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Dump folder"))
+        if (ImGui::Button("Open dump folder"))
             OpenDirectory(tm.get_dump_dir());
+        ImGui::SetItemTooltip("Open TT/dump in Explorer.");
         ImGui::SameLine();
-        if (ImGui::Button("Inject folder"))
+        if (ImGui::Button("Open inject folder"))
             OpenDirectory(tm.get_inject_dir());
+        ImGui::SetItemTooltip("Open TT/inject in Explorer.");
 
         // Counts.
         std::vector<TextureDetails> textures = tm.get_active_textures();

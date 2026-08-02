@@ -148,11 +148,13 @@ namespace TextureToolkit
         void *present_addr = vtable[17];
         void *reset_addr = vtable[16];
         void *create_tex_addr = vtable[23];
+        void *update_tex_addr = vtable[31]; // IDirect3DDevice9::UpdateTexture
         void *set_tex_addr = vtable[65];
 
         HookManager::get().create_hook(present_addr, &Hooked_Present, reinterpret_cast<void **>(&m_orig_present));
         HookManager::get().create_hook(reset_addr, &Hooked_Reset, reinterpret_cast<void **>(&m_orig_reset));
         HookManager::get().create_hook(create_tex_addr, &Hooked_CreateTexture, reinterpret_cast<void **>(&m_orig_create_texture));
+        HookManager::get().create_hook(update_tex_addr, &Hooked_UpdateTexture, reinterpret_cast<void **>(&m_orig_update_texture));
         HookManager::get().create_hook(set_tex_addr, &Hooked_SetTexture, reinterpret_cast<void **>(&m_orig_set_texture));
 
         Logger::get().info("[D3D9Hook] REAL GAME DEVICE INTERCEPTED! VTable hooks active on game IDirect3DDevice9.");
@@ -465,6 +467,19 @@ namespace TextureToolkit
 
         IDirect3DBaseTexture9 *pReplacement = TextureManager::get().get_replacement_texture9(pTexture);
         return get().m_orig_set_texture(device, Stage, pReplacement);
+    }
+
+    HRESULT STDMETHODCALLTYPE D3D9Hook::Hooked_UpdateTexture(IDirect3DDevice9 *device, IDirect3DBaseTexture9 *pSourceTexture, IDirect3DBaseTexture9 *pDestinationTexture)
+    {
+        HRESULT hr = get().m_orig_update_texture(device, pSourceTexture, pDestinationTexture);
+
+        // Games commonly load art into a SYSTEMMEM texture (which we hash and tag on unlock)
+        // and copy it into the DEFAULT texture that is actually bound. Carry the hash tag
+        // from source to destination so the bound texture is tracked, previewed and injected.
+        if (SUCCEEDED(hr) && !s_inside_injection)
+            TextureManager::get().copy_tag9(pSourceTexture, pDestinationTexture);
+
+        return hr;
     }
 
     HRESULT STDMETHODCALLTYPE D3D9Hook::Hooked_SurfaceLockRect(IDirect3DSurface9 *surface, D3DLOCKED_RECT *pLockedRect, const RECT *pRect, DWORD Flags)

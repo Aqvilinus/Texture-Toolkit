@@ -94,6 +94,11 @@ namespace TextureToolkit
         IDirect3DBaseTexture9 *get_replacement_texture9(IDirect3DBaseTexture9 *orig);
         void register_unmap_texture9(IDirect3DDevice9 *device, IDirect3DTexture9 *texture, const void *pixel_data, UINT width, UINT height, D3DFORMAT format, UINT pitch);
 
+        // Copies our content-hash tag from one D3D9 texture to another. Used when the game
+        // copies a tagged SYSTEMMEM texture into the DEFAULT texture it actually renders, so
+        // the bound texture becomes tracked, previewable and injectable.
+        void copy_tag9(IDirect3DBaseTexture9 *src, IDirect3DBaseTexture9 *dst);
+
         // Virtual Replacements for DX11
         ID3D11ShaderResourceView *get_replacement_srv11(ID3D11ShaderResourceView *orig);
         void register_unmap_texture11(ID3D11Device *device, ID3D11Resource *resource, const void *pixel_data, UINT width, UINT height, DXGI_FORMAT format, UINT pitch);
@@ -107,9 +112,6 @@ namespace TextureToolkit
         // every tracked texture. Each is written the next time the game draws it (using the
         // live handle, so it is safe against pointer reuse). Returns the number queued.
         size_t dump_all(bool scene_only);
-
-        // Empties the tracked-texture list. Entries repopulate as textures are drawn again.
-        void clear_tracked();
 
         // Queues an async dump from CPU pixel data already in hand (used by auto-dump).
         bool dump_texture(uint32_t hash, UINT width, UINT height, DXGI_FORMAT format, const void *data, UINT row_pitch);

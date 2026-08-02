@@ -36,6 +36,7 @@ namespace TextureToolkit
         typedef HRESULT(STDMETHODCALLTYPE *LockRect_t)(IDirect3DTexture9 *, UINT, D3DLOCKED_RECT *, const RECT *, DWORD);
         typedef HRESULT(STDMETHODCALLTYPE *UnlockRect_t)(IDirect3DTexture9 *, UINT);
         typedef HRESULT(STDMETHODCALLTYPE *SetTexture_t)(IDirect3DDevice9 *, DWORD, IDirect3DBaseTexture9 *);
+        typedef HRESULT(STDMETHODCALLTYPE *UpdateTexture_t)(IDirect3DDevice9 *, IDirect3DBaseTexture9 *, IDirect3DBaseTexture9 *);
 
         // Surface Hooks
         typedef HRESULT(STDMETHODCALLTYPE *SurfaceLockRect_t)(IDirect3DSurface9 *, D3DLOCKED_RECT *, const RECT *, DWORD);
@@ -50,6 +51,7 @@ namespace TextureToolkit
         static HRESULT STDMETHODCALLTYPE Hooked_LockRect(IDirect3DTexture9 *texture, UINT Level, D3DLOCKED_RECT *pLockedRect, const RECT *pRect, DWORD Flags);
         static HRESULT STDMETHODCALLTYPE Hooked_UnlockRect(IDirect3DTexture9 *texture, UINT Level);
         static HRESULT STDMETHODCALLTYPE Hooked_SetTexture(IDirect3DDevice9 *device, DWORD Stage, IDirect3DBaseTexture9 *pTexture);
+        static HRESULT STDMETHODCALLTYPE Hooked_UpdateTexture(IDirect3DDevice9 *device, IDirect3DBaseTexture9 *pSourceTexture, IDirect3DBaseTexture9 *pDestinationTexture);
 
         static HRESULT STDMETHODCALLTYPE Hooked_SurfaceLockRect(IDirect3DSurface9 *surface, D3DLOCKED_RECT *pLockedRect, const RECT *pRect, DWORD Flags);
         static HRESULT STDMETHODCALLTYPE Hooked_SurfaceUnlockRect(IDirect3DSurface9 *surface);
@@ -73,6 +75,7 @@ namespace TextureToolkit
         LockRect_t m_orig_lock_rect = nullptr;
         UnlockRect_t m_orig_unlock_rect = nullptr;
         SetTexture_t m_orig_set_texture = nullptr;
+        UpdateTexture_t m_orig_update_texture = nullptr;
 
         SurfaceLockRect_t m_orig_surface_lock_rect = nullptr;
         SurfaceUnlockRect_t m_orig_surface_unlock_rect = nullptr;

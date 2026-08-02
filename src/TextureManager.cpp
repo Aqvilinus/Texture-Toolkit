@@ -560,6 +560,17 @@ namespace TextureToolkit
         return std::filesystem::path();
     }
 
+    void TextureManager::copy_tag9(IDirect3DBaseTexture9 *src, IDirect3DBaseTexture9 *dst)
+    {
+        if (src == nullptr || dst == nullptr)
+            return;
+
+        uint32_t hash = 0;
+        DWORD size = sizeof(hash);
+        if (SUCCEEDED(src->GetPrivateData(TT_HASH_GUID, &hash, &size)) && size == sizeof(hash))
+            dst->SetPrivateData(TT_HASH_GUID, &hash, sizeof(hash), 0);
+    }
+
     IDirect3DBaseTexture9 *TextureManager::get_replacement_texture9(IDirect3DBaseTexture9 *orig)
     {
         if (orig == nullptr)
@@ -1258,42 +1269,29 @@ namespace TextureToolkit
             return false;
         TextureDetails &d = it->second;
 
+        // We read back only the live handle pinned while the texture is on screen. Reading
+        // an arbitrary tracked pointer is unsafe (it may have been freed and its address
+        // reused), so dumping requires the texture to be visible when the button is clicked.
         std::string path;
-        if (d.is_dx11)
+        if (hash != m_preview_target_hash)
         {
-            // Prefer the pinned live SRV's resource (guaranteed alive); else the tracked handle.
+            Logger::get().warn("[TextureManager] Cannot dump 0x" + format_hash_hex(hash) + ": select the texture first.");
+            return false;
+        }
+
+        if (d.is_dx11 && m_preview_srv11 != nullptr)
+        {
             ID3D11Resource *res = nullptr;
-            if (hash == m_preview_target_hash && m_preview_srv11 != nullptr)
-                m_preview_srv11->GetResource(&res);
-            else if (d.resource_handle != 0)
-            {
-                res = reinterpret_cast<ID3D11Resource *>(d.resource_handle);
-                res->AddRef();
-            }
+            m_preview_srv11->GetResource(&res);
             if (res != nullptr)
             {
                 path = dump_resource11(hash, res);
                 res->Release();
             }
         }
-        else
+        else if (!d.is_dx11 && m_preview_tex9 != nullptr)
         {
-            IDirect3DBaseTexture9 *base = nullptr;
-            if (hash == m_preview_target_hash && m_preview_tex9 != nullptr)
-            {
-                base = m_preview_tex9;
-                base->AddRef();
-            }
-            else if (d.resource_handle != 0)
-            {
-                base = reinterpret_cast<IDirect3DBaseTexture9 *>(d.resource_handle);
-                base->AddRef();
-            }
-            if (base != nullptr)
-            {
-                path = dump_base_texture9(hash, base);
-                base->Release();
-            }
+            path = dump_base_texture9(hash, m_preview_tex9);
         }
 
         if (!path.empty())
@@ -1303,6 +1301,8 @@ namespace TextureToolkit
             Logger::get().info("[TextureManager] Dumped 0x" + format_hash_hex(hash) + " to " + path);
             return true;
         }
+
+        Logger::get().warn("[TextureManager] Cannot dump 0x" + format_hash_hex(hash) + ": make sure it is visible on screen (default-pool textures cannot be read back on DX9; use auto-dump for those).");
         return false;
     }
 
@@ -1324,15 +1324,6 @@ namespace TextureToolkit
         }
         Logger::get().info("[TextureManager] Dump-all queued " + std::to_string(queued) + (scene_only ? " active" : " tracked") + " texture(s); each is written the next time it is drawn.");
         return queued;
-    }
-
-    void TextureManager::clear_tracked()
-    {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        m_tracked_textures.clear();
-        m_current_frame_hashes.clear();
-        m_active_frame_hashes.clear();
-        m_pending_dumps.clear();
     }
 
     // Drains a few queued bulk-dump readbacks per frame. Caller MUST hold m_mutex.
