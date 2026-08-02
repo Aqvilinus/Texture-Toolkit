@@ -41,6 +41,23 @@ namespace TextureToolkit
         }
     }
 
+    // Total GPU byte size of a texture across all its mip levels.
+    static uint32_t compute_texture_bytes(reshade::api::format fmt, uint32_t w, uint32_t h, uint32_t mips)
+    {
+        uint32_t total = 0;
+        for (uint32_t m = 0; m < (mips == 0 ? 1u : mips); ++m)
+        {
+            uint32_t rp = reshade::api::format_row_pitch(fmt, w);
+            uint32_t sp = reshade::api::format_slice_pitch(fmt, rp, h);
+            if (sp == 0)
+                sp = rp * h;
+            total += sp;
+            w = (std::max)(1u, w / 2);
+            h = (std::max)(1u, h / 2);
+        }
+        return total;
+    }
+
     // Number of mip levels in a full chain down to 1x1 for the given dimensions.
     static uint32_t full_mip_count(uint32_t w, uint32_t h)
     {
@@ -736,6 +753,12 @@ namespace TextureToolkit
         details.is_compressed = dx9_compressed;
         details.is_srgb = false; // D3D9 sRGB is a sampler state, not part of the format
         details.is_dx11 = false;
+        {
+            DXGI_FORMAT ddx = d3d9_format_to_dxgi(format);
+            details.data_size = (ddx != DXGI_FORMAT_UNKNOWN)
+                ? compute_texture_bytes(static_cast<reshade::api::format>(ddx), width, height, original_levels)
+                : width * height * 4;
+        }
         details.last_seen_frame = m_frame_count;
 
         std::filesystem::path inject_path = find_injection_path(hash);
@@ -970,6 +993,7 @@ namespace TextureToolkit
         details.misc_flags = orig_desc.MiscFlags;
         details.cpu_access = orig_desc.CPUAccessFlags;
         details.usage = static_cast<uint32_t>(orig_desc.Usage);
+        details.data_size = compute_texture_bytes(reshade_fmt, width, height, details.mip_levels);
         details.last_seen_frame = m_frame_count;
 
         std::filesystem::path inject_path = find_injection_path(hash);

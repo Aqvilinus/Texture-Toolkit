@@ -60,6 +60,12 @@ namespace TextureToolkit
         io.AddMouseButtonEvent(0, (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0);
         io.AddMouseButtonEvent(1, (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0);
         io.AddMouseButtonEvent(2, (GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0);
+
+        // Feed the [ and ] keys here too (same reliable point as the mouse poll, before
+        // NewFrame). The UI reads ImGui's key state to step through the texture list; the
+        // poll in draw_ui itself returns nothing on some titles.
+        io.AddKeyEvent(ImGuiKey_LeftBracket,  (GetAsyncKeyState(VK_OEM_4) & 0x8000) != 0);
+        io.AddKeyEvent(ImGuiKey_RightBracket, (GetAsyncKeyState(VK_OEM_6) & 0x8000) != 0);
     }
 
     // Colors used across the panel.
@@ -196,6 +202,9 @@ namespace TextureToolkit
             std::snprintf(buf, sizeof(buf), "%u", tex.mip_levels);
             MetaRow("Mip levels", buf);
 
+            std::snprintf(buf, sizeof(buf), "%.3f MiB", tex.data_size / (1024.0 * 1024.0));
+            MetaRow("Data size", buf);
+
             std::snprintf(buf, sizeof(buf), "%u  (%s)", tex.format_id, tex.format_str.c_str());
             MetaRow("Format", buf);
 
@@ -310,14 +319,16 @@ namespace TextureToolkit
             OpenDirectory(tm.get_inject_dir());
         ImGui::SetItemTooltip("Open TT/inject in Explorer.");
 
-        // Counts.
+        // Counts and total memory.
         std::vector<TextureDetails> textures = tm.get_active_textures();
         size_t injected = 0, dumped = 0, original = 0;
+        uint64_t total_bytes = 0;
         for (const auto &t : textures)
         {
             if (t.status == TextureStatus::INJECTED) injected++;
             else if (t.status == TextureStatus::DUMPED) dumped++;
             else original++;
+            total_bytes += t.data_size;
         }
 
         ImGui::Text("%zu tracked", textures.size());
@@ -327,6 +338,8 @@ namespace TextureToolkit
         ImGui::TextColored(kColDumped, "  %zu dumped", dumped);
         ImGui::SameLine();
         ImGui::TextColored(kColOriginal, "  %zu original", original);
+        ImGui::SameLine();
+        ImGui::TextColored(kColMuted, "   %.2f MiB", total_bytes / (1024.0 * 1024.0));
 
         // Filter.
         ImGui::SetNextItemWidth(260.0f);
@@ -343,8 +356,36 @@ namespace TextureToolkit
         float avail_h = ImGui::GetContentRegionAvail().y - ImGui::GetFrameHeightWithSpacing();
         float list_w = (total_w - splitter_w) * s_split;
 
+        // Build the filtered list once so [ / ] navigation can step through it by index.
+        std::vector<const TextureDetails *> shown;
+        shown.reserve(textures.size());
+        for (const auto &tex : textures)
+        {
+            if (!filter_str.empty())
+            {
+                std::string h = tex.hash_hex;
+                std::transform(h.begin(), h.end(), h.begin(), ::tolower);
+                std::string dim = std::to_string(tex.width) + "x" + std::to_string(tex.height);
+                std::string fmt = tex.format_short;
+                std::transform(fmt.begin(), fmt.end(), fmt.begin(), ::tolower);
+                if (h.find(filter_str) == std::string::npos &&
+                    dim.find(filter_str) == std::string::npos &&
+                    fmt.find(filter_str) == std::string::npos)
+                    continue;
+            }
+            shown.push_back(&tex);
+        }
+
+        static bool s_scroll_to_sel = false;
+        bool list_hovered = false;
+
         ImGui::BeginChild("list", ImVec2(list_w, avail_h), ImGuiChildFlags_Borders);
         {
+            // True whenever the mouse is over the list. ChildWindows is required because a
+            // ScrollY table creates its own inner scroll window, so hovering a row makes
+            // that inner window (not this one) the hovered window.
+            list_hovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows);
+
             ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY |
                                     ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV |
                                     ImGuiTableFlags_SizingStretchProp;
@@ -359,21 +400,9 @@ namespace TextureToolkit
                 ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthFixed, 70.0f);
                 ImGui::TableHeadersRow();
 
-                for (const auto &tex : textures)
+                for (const TextureDetails *ptex : shown)
                 {
-                    if (!filter_str.empty())
-                    {
-                        std::string h = tex.hash_hex;
-                        std::transform(h.begin(), h.end(), h.begin(), ::tolower);
-                        std::string dim = std::to_string(tex.width) + "x" + std::to_string(tex.height);
-                        std::string fmt = tex.format_short;
-                        std::transform(fmt.begin(), fmt.end(), fmt.begin(), ::tolower);
-                        if (h.find(filter_str) == std::string::npos &&
-                            dim.find(filter_str) == std::string::npos &&
-                            fmt.find(filter_str) == std::string::npos)
-                            continue;
-                    }
-
+                    const TextureDetails &tex = *ptex;
                     ImGui::TableNextRow();
 
                     ImGui::TableSetColumnIndex(0);
@@ -381,6 +410,13 @@ namespace TextureToolkit
                     bool selected = (s_selected_texture_hash == tex.hash);
                     if (ImGui::Selectable(hash_str.c_str(), selected, ImGuiSelectableFlags_SpanAllColumns))
                         s_selected_texture_hash = tex.hash;
+
+                    // Follow the selection when it was moved with the keyboard.
+                    if (selected && s_scroll_to_sel)
+                    {
+                        ImGui::SetScrollHereY(0.5f);
+                        s_scroll_to_sel = false;
+                    }
 
                     ImGui::TableSetColumnIndex(1);
                     ImGui::Text("%ux%u", tex.width, tex.height);
@@ -401,6 +437,37 @@ namespace TextureToolkit
             }
         }
         ImGui::EndChild();
+
+        // Step through the list with [ and ] while it is hovered. Keys are polled so this
+        // works under exclusive-DirectInput games that post no key messages; draw_ui runs
+        // inside the g_inside_imgui_render window, so the hooked GetAsyncKeyState returns
+        // the real key state here.
+        if (list_hovered)
+        {
+            ImGui::BeginTooltip();
+            ImGui::TextUnformatted("Press [ or ] to step through textures.");
+            ImGui::EndTooltip();
+        }
+        {
+            // [ and ] are fed into ImGui from feed_overlay_mouse; here we just read the
+            // per-frame pressed state and step the selection when the list is hovered.
+            bool go_prev = ImGui::IsKeyPressed(ImGuiKey_LeftBracket, false);
+            bool go_next = ImGui::IsKeyPressed(ImGuiKey_RightBracket, false);
+
+            int dir = list_hovered ? (go_prev ? -1 : (go_next ? 1 : 0)) : 0;
+
+            if (dir != 0 && !shown.empty())
+            {
+                int cur = -1;
+                for (int i = 0; i < static_cast<int>(shown.size()); ++i)
+                    if (shown[i]->hash == s_selected_texture_hash) { cur = i; break; }
+
+                int next = (cur < 0) ? (dir > 0 ? 0 : static_cast<int>(shown.size()) - 1) : cur + dir;
+                next = next < 0 ? 0 : (next >= static_cast<int>(shown.size()) ? static_cast<int>(shown.size()) - 1 : next);
+                s_selected_texture_hash = shown[next]->hash;
+                s_scroll_to_sel = true;
+            }
+        }
 
         // Draggable divider.
         ImGui::SameLine(0.0f, 0.0f);

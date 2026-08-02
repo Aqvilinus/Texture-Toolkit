@@ -32,6 +32,8 @@ namespace TextureToolkit
         uint32_t repl_width = 0;     // injected replacement dimensions (0 if not injected)
         uint32_t repl_height = 0;
 
+        uint32_t data_size = 0;      // GPU byte size of the full mip chain
+
         uint32_t format_id = 0;      // native DXGI_FORMAT / D3DFORMAT value
         std::string format_str;      // full name, e.g. "DXGI_FORMAT_BC3_UNORM"
         std::string format_short;    // list label, e.g. "DX11_BC3_UNORM"
