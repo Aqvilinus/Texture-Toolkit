@@ -193,6 +193,67 @@ namespace TextureToolkit
         return compute_crc32(clean_buffer.data(), clean_buffer.size());
     }
 
+    // Human-readable DXGI_FORMAT name. Covers the formats games actually ship textures in;
+    // anything else falls back to the numeric id.
+    static std::string dxgi_format_name(DXGI_FORMAT f)
+    {
+        switch (f)
+        {
+        case DXGI_FORMAT_R8G8B8A8_UNORM:        return "R8G8B8A8_UNORM";
+        case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:   return "R8G8B8A8_UNORM_SRGB";
+        case DXGI_FORMAT_R8G8B8A8_TYPELESS:     return "R8G8B8A8_TYPELESS";
+        case DXGI_FORMAT_B8G8R8A8_UNORM:        return "B8G8R8A8_UNORM";
+        case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:   return "B8G8R8A8_UNORM_SRGB";
+        case DXGI_FORMAT_B8G8R8X8_UNORM:        return "B8G8R8X8_UNORM";
+        case DXGI_FORMAT_R10G10B10A2_UNORM:     return "R10G10B10A2_UNORM";
+        case DXGI_FORMAT_R16G16B16A16_FLOAT:    return "R16G16B16A16_FLOAT";
+        case DXGI_FORMAT_R8_UNORM:              return "R8_UNORM";
+        case DXGI_FORMAT_R8G8_UNORM:            return "R8G8_UNORM";
+        case DXGI_FORMAT_A8_UNORM:              return "A8_UNORM";
+        case DXGI_FORMAT_BC1_UNORM:             return "BC1_UNORM";
+        case DXGI_FORMAT_BC1_UNORM_SRGB:        return "BC1_UNORM_SRGB";
+        case DXGI_FORMAT_BC1_TYPELESS:          return "BC1_TYPELESS";
+        case DXGI_FORMAT_BC2_UNORM:             return "BC2_UNORM";
+        case DXGI_FORMAT_BC2_UNORM_SRGB:        return "BC2_UNORM_SRGB";
+        case DXGI_FORMAT_BC3_UNORM:             return "BC3_UNORM";
+        case DXGI_FORMAT_BC3_UNORM_SRGB:        return "BC3_UNORM_SRGB";
+        case DXGI_FORMAT_BC3_TYPELESS:          return "BC3_TYPELESS";
+        case DXGI_FORMAT_BC4_UNORM:             return "BC4_UNORM";
+        case DXGI_FORMAT_BC4_SNORM:             return "BC4_SNORM";
+        case DXGI_FORMAT_BC5_UNORM:             return "BC5_UNORM";
+        case DXGI_FORMAT_BC5_SNORM:             return "BC5_SNORM";
+        case DXGI_FORMAT_BC6H_UF16:             return "BC6H_UF16";
+        case DXGI_FORMAT_BC6H_SF16:             return "BC6H_SF16";
+        case DXGI_FORMAT_BC7_UNORM:             return "BC7_UNORM";
+        case DXGI_FORMAT_BC7_UNORM_SRGB:        return "BC7_UNORM_SRGB";
+        case DXGI_FORMAT_BC7_TYPELESS:          return "BC7_TYPELESS";
+        default:                                return std::to_string(static_cast<uint32_t>(f));
+        }
+    }
+
+    static bool dxgi_format_is_compressed(DXGI_FORMAT f)
+    {
+        return f >= DXGI_FORMAT_BC1_TYPELESS && f <= DXGI_FORMAT_BC5_SNORM
+            || f >= DXGI_FORMAT_BC6H_TYPELESS && f <= DXGI_FORMAT_BC7_UNORM_SRGB;
+    }
+
+    static bool dxgi_format_is_srgb(DXGI_FORMAT f)
+    {
+        switch (f)
+        {
+        case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+        case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+        case DXGI_FORMAT_B8G8R8X8_UNORM_SRGB:
+        case DXGI_FORMAT_BC1_UNORM_SRGB:
+        case DXGI_FORMAT_BC2_UNORM_SRGB:
+        case DXGI_FORMAT_BC3_UNORM_SRGB:
+        case DXGI_FORMAT_BC7_UNORM_SRGB:
+            return true;
+        default:
+            return false;
+        }
+    }
+
     TextureManager &TextureManager::get()
     {
         static TextureManager instance;
@@ -249,6 +310,41 @@ namespace TextureToolkit
 
         std::lock_guard<std::mutex> lock(m_mutex);
         release_replacements();
+        release_preview();
+    }
+
+    void TextureManager::set_preview_target(uint32_t hash)
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (hash == m_preview_target_hash)
+            return;
+        release_preview();
+        m_preview_target_hash = hash;
+    }
+
+    uint64_t TextureManager::get_original_preview_handle()
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (m_preview_srv11 != nullptr)
+            return reinterpret_cast<uint64_t>(m_preview_srv11);
+        if (m_preview_tex9 != nullptr)
+            return reinterpret_cast<uint64_t>(m_preview_tex9);
+        return 0;
+    }
+
+    // Releases the pinned original preview reference. Caller MUST hold m_mutex.
+    void TextureManager::release_preview()
+    {
+        if (m_preview_tex9 != nullptr)
+        {
+            m_preview_tex9->Release();
+            m_preview_tex9 = nullptr;
+        }
+        if (m_preview_srv11 != nullptr)
+        {
+            m_preview_srv11->Release();
+            m_preview_srv11 = nullptr;
+        }
     }
 
     // Releases the COM reference we hold for every stored replacement. Caller MUST
@@ -349,6 +445,13 @@ namespace TextureToolkit
 
         std::lock_guard<std::mutex> lock(m_mutex);
         m_current_frame_hashes.insert(hash);
+
+        // Pin the live original for preview if this is the selected texture.
+        if (hash == m_preview_target_hash && m_preview_tex9 == nullptr)
+        {
+            orig->AddRef();
+            m_preview_tex9 = orig;
+        }
 
         if (!enable_injection)
             return orig;
@@ -467,14 +570,21 @@ namespace TextureToolkit
         // immune to driver pointer reuse.
         texture->SetPrivateData(TT_HASH_GUID, &hash, sizeof(hash), 0);
 
+        bool dx9_compressed = (format == D3DFMT_DXT1 || format == D3DFMT_DXT2 || format == D3DFMT_DXT3 ||
+                               format == D3DFMT_DXT4 || format == D3DFMT_DXT5);
+
         TextureDetails details;
         details.hash = hash;
         details.hash_hex = format_hash_hex(hash);
         details.width = width;
         details.height = height;
         details.mip_levels = original_levels;
-        details.format_str = "D3DFORMAT_" + d3d9_format_to_string(format);
+        details.format_id = static_cast<uint32_t>(format);
+        details.format_str = "D3DFMT_" + d3d9_format_to_string(format);
         details.format_short = "D3D9_" + d3d9_format_to_string(format);
+        details.is_compressed = dx9_compressed;
+        details.is_srgb = false; // D3D9 sRGB is a sampler state, not part of the format
+        details.is_dx11 = false;
         details.resource_handle = handle;
         details.last_seen_frame = m_frame_count;
 
@@ -632,6 +742,13 @@ namespace TextureToolkit
         std::lock_guard<std::mutex> lock(m_mutex);
         m_current_frame_hashes.insert(hash);
 
+        // Pin the live original SRV for preview if this is the selected texture.
+        if (hash == m_preview_target_hash && m_preview_srv11 == nullptr)
+        {
+            orig->AddRef();
+            m_preview_srv11 = orig;
+        }
+
         if (!enable_injection)
             return orig;
 
@@ -659,18 +776,17 @@ namespace TextureToolkit
         if (hash == 0)
             return;
 
-        // Original mip count drives the replacement's mip topology.
-        UINT original_levels = 1;
+        // Original description drives the replacement's mip topology and the info panel.
+        D3D11_TEXTURE2D_DESC orig_desc = {};
         {
             ID3D11Texture2D *orig_tex = nullptr;
             if (SUCCEEDED(resource->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void **>(&orig_tex))) && orig_tex != nullptr)
             {
-                D3D11_TEXTURE2D_DESC od = {};
-                orig_tex->GetDesc(&od);
-                original_levels = od.MipLevels; // 0 = full chain generated by the runtime
+                orig_tex->GetDesc(&orig_desc);
                 orig_tex->Release();
             }
         }
+        UINT original_levels = orig_desc.MipLevels; // 0 = full chain generated by the runtime
 
         std::lock_guard<std::mutex> lock(m_mutex);
         uint64_t handle = reinterpret_cast<uint64_t>(resource);
@@ -684,8 +800,17 @@ namespace TextureToolkit
         details.width = width;
         details.height = height;
         details.mip_levels = (original_levels == 0) ? full_mip_count(width, height) : original_levels;
-        details.format_str = "DXGI_FORMAT_" + std::to_string(static_cast<uint32_t>(format));
-        details.format_short = "DX11_" + std::to_string(static_cast<uint32_t>(format));
+        details.format_id = static_cast<uint32_t>(format);
+        details.format_str = "DXGI_FORMAT_" + dxgi_format_name(format);
+        details.format_short = "DX11_" + dxgi_format_name(format);
+        details.is_compressed = dxgi_format_is_compressed(format);
+        details.is_srgb = dxgi_format_is_srgb(format);
+        details.is_dx11 = true;
+        details.array_size = (orig_desc.ArraySize > 0) ? orig_desc.ArraySize : 1;
+        details.bind_flags = orig_desc.BindFlags;
+        details.misc_flags = orig_desc.MiscFlags;
+        details.cpu_access = orig_desc.CPUAccessFlags;
+        details.usage = static_cast<uint32_t>(orig_desc.Usage);
         details.resource_handle = handle;
         details.last_seen_frame = m_frame_count;
 

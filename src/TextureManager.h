@@ -29,8 +29,19 @@ namespace TextureToolkit
         uint32_t height = 0;
         uint32_t mip_levels = 1;
 
-        std::string format_str;
-        std::string format_short;
+        uint32_t format_id = 0;      // native DXGI_FORMAT / D3DFORMAT value
+        std::string format_str;      // full name, e.g. "DXGI_FORMAT_BC3_UNORM"
+        std::string format_short;    // list label, e.g. "DX11_BC3_UNORM"
+        bool is_compressed = false;
+        bool is_srgb = false;
+        bool is_dx11 = false;
+
+        // DX11 resource description (0 / defaults on DX9).
+        uint32_t array_size = 1;
+        uint32_t bind_flags = 0;
+        uint32_t misc_flags = 0;
+        uint32_t cpu_access = 0;
+        uint32_t usage = 0;
 
         TextureStatus status = TextureStatus::ORIGINAL;
         std::string filepath_dumped;
@@ -62,6 +73,14 @@ namespace TextureToolkit
 
         // Active Texture Queries
         std::vector<TextureDetails> get_active_textures();
+
+        // Live original-texture preview. The UI names one hash as the preview target; the
+        // next time that texture is bound we take a COM reference to the exact resource the
+        // game is using, so the preview stays valid even under pointer reuse and cannot be
+        // freed while shown. At most one original is pinned at a time. Returns 0 until the
+        // target is bound (i.e. visible in the scene).
+        void set_preview_target(uint32_t hash);
+        uint64_t get_original_preview_handle();
 
         // Virtual Replacements for DX9
         IDirect3DBaseTexture9 *get_replacement_texture9(IDirect3DBaseTexture9 *orig);
@@ -101,6 +120,12 @@ namespace TextureToolkit
         std::unordered_map<uint32_t, ID3D11ShaderResourceView *> m_d3d11_replacements;
 
         void release_replacements();
+
+        // Live original-texture preview (see set_preview_target). We hold one COM reference.
+        uint32_t m_preview_target_hash = 0;
+        IDirect3DBaseTexture9 *m_preview_tex9 = nullptr;
+        ID3D11ShaderResourceView *m_preview_srv11 = nullptr;
+        void release_preview();
 
         // Background dump worker
         struct DumpRequest

@@ -63,14 +63,163 @@ namespace TextureToolkit
         io.AddMouseButtonEvent(2, (GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0);
     }
 
+    // Colors used across the panel.
+    static const ImVec4 kColInjected(0.35f, 0.85f, 0.45f, 1.0f);
+    static const ImVec4 kColDumped(0.35f, 0.70f, 1.00f, 1.0f);
+    static const ImVec4 kColOriginal(0.70f, 0.70f, 0.70f, 1.0f);
+    static const ImVec4 kColMuted(0.60f, 0.60f, 0.62f, 1.0f);
+
+    static const ImVec4 &status_color(TextureStatus s)
+    {
+        if (s == TextureStatus::INJECTED) return kColInjected;
+        if (s == TextureStatus::DUMPED)   return kColDumped;
+        return kColOriginal;
+    }
+
+    static const char *status_label(TextureStatus s)
+    {
+        if (s == TextureStatus::INJECTED) return "Injected";
+        if (s == TextureStatus::DUMPED)   return "Dumped";
+        return "Original";
+    }
+
+    // Draws one labeled thumbnail. handle is a native texture id (IDirect3DBaseTexture9*
+    // on DX9, ID3D11ShaderResourceView* on DX11). 0 draws a placeholder.
+    static void DrawThumbnail(const char *label, uint64_t handle, uint32_t w, uint32_t h, const char *empty_hint)
+    {
+        const float box = 150.0f;
+        ImGui::BeginGroup();
+        ImGui::TextUnformatted(label);
+
+        if (handle != 0)
+        {
+            float aspect = (h > 0) ? static_cast<float>(w) / static_cast<float>(h) : 1.0f;
+            float pw = box, ph = box;
+            if (aspect >= 1.0f) ph = box / aspect;
+            else                pw = box * aspect;
+
+            ImGui::ImageWithBg(ImTextureRef(static_cast<ImTextureID>(handle)),
+                               ImVec2(pw, ph), ImVec2(0, 0), ImVec2(1, 1),
+                               ImVec4(0.12f, 0.12f, 0.14f, 1.0f), ImVec4(1, 1, 1, 1));
+        }
+        else
+        {
+            ImVec2 p0 = ImGui::GetCursorScreenPos();
+            ImGui::Dummy(ImVec2(box, box));
+            ImDrawList *dl = ImGui::GetWindowDrawList();
+            dl->AddRect(p0, ImVec2(p0.x + box, p0.y + box), ImGui::GetColorU32(ImGuiCol_Border));
+            ImVec2 ts = ImGui::CalcTextSize(empty_hint, nullptr, false, box - 16.0f);
+            dl->AddText(nullptr, 0.0f, ImVec2(p0.x + (box - ts.x) * 0.5f, p0.y + (box - ts.y) * 0.5f),
+                        ImGui::GetColorU32(kColMuted), empty_hint);
+        }
+        ImGui::EndGroup();
+    }
+
+    static void MetaRow(const char *label, const char *value)
+    {
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::TextColored(kColMuted, "%s", label);
+        ImGui::TableSetColumnIndex(1);
+        ImGui::TextUnformatted(value);
+    }
+
+    static void DrawInspector(TextureManager &tm, const TextureDetails &tex)
+    {
+        ImGui::SeparatorText("Inspector");
+
+        std::string hash = "0x" + tex.hash_hex;
+        ImGui::TextColored(status_color(tex.status), "%s", hash.c_str());
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Copy"))
+        {
+            ImGui::SetClipboardText(hash.c_str());
+            SetStatusMessage("Copied " + hash + " to clipboard.");
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Dump"))
+        {
+            tm.request_dump(tex.hash);
+            SetStatusMessage("Queued dump for " + hash + " to TT/dump.");
+        }
+
+        ImGui::Spacing();
+
+        // Previews: the live original (pinned when the texture is bound this frame) and
+        // the injected replacement (if one is active).
+        uint64_t original_handle = tm.get_original_preview_handle();
+        DrawThumbnail("Original", original_handle, tex.width, tex.height,
+                      original_handle ? "" : "Not in current scene");
+        if (tex.replacement_handle != 0)
+        {
+            ImGui::SameLine(0.0f, 16.0f);
+            DrawThumbnail("Replacement", tex.replacement_handle, tex.width, tex.height, "");
+        }
+
+        ImGui::Spacing();
+
+        // Metadata grid.
+        if (ImGui::BeginTable("meta", 2, ImGuiTableFlags_SizingFixedFit))
+        {
+            char buf[128];
+
+            std::snprintf(buf, sizeof(buf), "%u x %u", tex.width, tex.height);
+            MetaRow("Dimensions", buf);
+
+            std::snprintf(buf, sizeof(buf), "%u", tex.mip_levels);
+            MetaRow("Mip levels", buf);
+
+            std::snprintf(buf, sizeof(buf), "%u  (%s)", tex.format_id, tex.format_str.c_str());
+            MetaRow("Format", buf);
+
+            MetaRow("Compressed", tex.is_compressed ? "Yes" : "No");
+            MetaRow("sRGB", tex.is_srgb ? "Yes" : "No");
+
+            if (tex.is_dx11)
+            {
+                std::snprintf(buf, sizeof(buf), "%u", tex.array_size);
+                MetaRow("Array size", buf);
+                std::snprintf(buf, sizeof(buf), "0x%04X", tex.bind_flags);
+                MetaRow("Bind flags", buf);
+                std::snprintf(buf, sizeof(buf), "%u", tex.usage);
+                MetaRow("Usage", buf);
+                std::snprintf(buf, sizeof(buf), "0x%02X", tex.misc_flags);
+                MetaRow("Misc flags", buf);
+            }
+
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextColored(kColMuted, "Status");
+            ImGui::TableSetColumnIndex(1);
+            ImGui::TextColored(status_color(tex.status), "%s", status_label(tex.status));
+
+            ImGui::EndTable();
+        }
+
+        if (tex.status == TextureStatus::INJECTED && !tex.filepath_injected.empty())
+        {
+            ImGui::TextColored(kColMuted, "File");
+            ImGui::SameLine();
+            ImGui::TextWrapped("%s", tex.filepath_injected.c_str());
+        }
+        else if (tex.status == TextureStatus::DUMPED && !tex.filepath_dumped.empty())
+        {
+            ImGui::TextColored(kColMuted, "File");
+            ImGui::SameLine();
+            ImGui::TextWrapped("%s", tex.filepath_dumped.c_str());
+        }
+    }
+
     void TextureToolkitUI::draw_ui(void *runtime)
     {
-        // 1. Draw Sleek SpecialK-style OSD Notification Banner
         OSDBanner::get().draw_osd();
 
-        // 2. If Main UI Control Panel is toggled off, exit
         if (!s_show_ui)
+        {
+            // Drop the pinned preview reference while the panel is hidden.
+            TextureManager::get().set_preview_target(0);
             return;
+        }
 
         TextureManager &tm = TextureManager::get();
 
@@ -80,260 +229,142 @@ namespace TextureToolkit
             ImGui::SetNextWindowPos(ImVec2(display_size.x * 0.5f, display_size.y * 0.5f), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
         }
 
-        ImGui::SetNextWindowSize(ImVec2(800, 600), ImGuiCond_FirstUseEver);
-        if (!ImGui::Begin("Texture Toolkit v1.0.0 (Press INSERT to Hide)", &s_show_ui, ImGuiWindowFlags_MenuBar))
+        ImGui::SetNextWindowSize(ImVec2(920, 620), ImGuiCond_FirstUseEver);
+        if (!ImGui::Begin("Texture Toolkit  (INSERT to close)", &s_show_ui))
         {
             ImGui::End();
             return;
         }
 
-        // Menu Bar
-        if (ImGui::BeginMenuBar())
+        // Toolbar: toggles and folder shortcuts.
+        ImGui::Checkbox("Injection", &tm.enable_injection);
+        ImGui::SameLine();
+        ImGui::Checkbox("Auto-dump", &tm.auto_dump);
+        ImGui::SameLine();
+        ImGui::Checkbox("Skip < 16px", &tm.filter_small_textures);
+        ImGui::SameLine();
+        ImGui::Checkbox("Scene only", &tm.show_current_frame_only);
+
+        ImGui::SameLine(0.0f, 24.0f);
+        if (ImGui::Button("Reload injects"))
         {
-            if (ImGui::BeginMenu("File"))
-            {
-                if (ImGui::MenuItem("Open Dump Folder"))
-                {
-                    OpenDirectory(tm.get_dump_dir());
-                }
-                if (ImGui::MenuItem("Open Inject Folder"))
-                {
-                    OpenDirectory(tm.get_inject_dir());
-                }
-                if (ImGui::MenuItem("Hot-Reload Injected Textures"))
-                {
-                    tm.rescan_injected();
-                    SetStatusMessage("Scanned replacement textures in TT/inject");
-                }
-                ImGui::EndMenu();
-            }
-            ImGui::EndMenuBar();
+            tm.rescan_injected();
+            SetStatusMessage("Rescanned TT/inject for DDS replacements.");
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Dump folder"))
+            OpenDirectory(tm.get_dump_dir());
+        ImGui::SameLine();
+        if (ImGui::Button("Inject folder"))
+            OpenDirectory(tm.get_inject_dir());
+
+        // Counts.
+        std::vector<TextureDetails> textures = tm.get_active_textures();
+        size_t injected = 0, dumped = 0, original = 0;
+        for (const auto &t : textures)
+        {
+            if (t.status == TextureStatus::INJECTED) injected++;
+            else if (t.status == TextureStatus::DUMPED) dumped++;
+            else original++;
         }
 
-        // Configuration & Status
-        if (ImGui::CollapsingHeader("Pipeline Configuration & Shortcuts", ImGuiTreeNodeFlags_DefaultOpen))
-        {
-            ImGui::Checkbox("Enable Texture Injection", &tm.enable_injection);
-            ImGui::SameLine();
-            ImGui::Checkbox("Auto-Dump Textures on Load", &tm.auto_dump);
-            ImGui::SameLine();
-            ImGui::Checkbox("Filter Small Textures (< 16x16)", &tm.filter_small_textures);
-
-            ImGui::Checkbox("Show Only Active Scene Textures", &tm.show_current_frame_only);
-
-            ImGui::TextDisabled("Pipeline: DDS-only injection and DDS export (BC1-BC7 + uncompressed).");
-
-            if (ImGui::Button("Hot-Reload Textures"))
-            {
-                tm.rescan_injected();
-                SetStatusMessage("User triggered texture hot-reload.");
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Open Dump Folder"))
-            {
-                OpenDirectory(tm.get_dump_dir());
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Open Inject Folder"))
-            {
-                OpenDirectory(tm.get_inject_dir());
-            }
-        }
-
-        ImGui::Separator();
-
-        // Active Textures Table & Search
-        std::vector<TextureDetails> active_textures = tm.get_active_textures();
-        size_t injected_count = 0;
-        size_t dumped_count = 0;
-        size_t original_count = 0;
-
-        for (const auto &tex : active_textures)
-        {
-            if (tex.status == TextureStatus::INJECTED) injected_count++;
-            else if (tex.status == TextureStatus::DUMPED) dumped_count++;
-            else original_count++;
-        }
-
-        ImGui::Text("Tracked Textures (%zu total): ", active_textures.size());
+        ImGui::Text("%zu tracked", textures.size());
         ImGui::SameLine();
-        ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.3f, 1.0f), "Injected: %zu ", injected_count);
+        ImGui::TextColored(kColInjected, "  %zu injected", injected);
         ImGui::SameLine();
-        ImGui::TextColored(ImVec4(0.3f, 0.8f, 1.0f, 1.0f), "Dumped: %zu ", dumped_count);
+        ImGui::TextColored(kColDumped, "  %zu dumped", dumped);
         ImGui::SameLine();
-        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "Original: %zu", original_count);
+        ImGui::TextColored(kColOriginal, "  %zu original", original);
 
-        ImGui::SetNextItemWidth(250.0f);
-        ImGui::InputText("Filter Search", s_filter_buf, sizeof(s_filter_buf));
+        // Filter.
+        ImGui::SetNextItemWidth(260.0f);
+        ImGui::InputTextWithHint("##filter", "Filter by hash, size or format", s_filter_buf, sizeof(s_filter_buf));
 
         std::string filter_str = s_filter_buf;
         std::transform(filter_str.begin(), filter_str.end(), filter_str.begin(), ::tolower);
 
-        std::vector<TextureDetails> filtered_textures;
-        filtered_textures.reserve(active_textures.size());
-        for (const auto &tex : active_textures)
+        // Two panes: list on the left, inspector on the right.
+        const float inspector_w = 360.0f;
+        float avail_h = ImGui::GetContentRegionAvail().y - ImGui::GetFrameHeightWithSpacing();
+
+        ImGui::BeginChild("list", ImVec2(-inspector_w, avail_h), ImGuiChildFlags_Borders);
         {
-            if (!filter_str.empty())
+            ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY |
+                                    ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV |
+                                    ImGuiTableFlags_SizingStretchProp;
+
+            if (ImGui::BeginTable("textures", 5, flags))
             {
-                std::string hash_hex = tex.hash_hex;
-                std::transform(hash_hex.begin(), hash_hex.end(), hash_hex.begin(), ::tolower);
+                ImGui::TableSetupScrollFreeze(0, 1);
+                ImGui::TableSetupColumn("Hash", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+                ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_WidthFixed, 82.0f);
+                ImGui::TableSetupColumn("Mips", ImGuiTableColumnFlags_WidthFixed, 38.0f);
+                ImGui::TableSetupColumn("Format", ImGuiTableColumnFlags_WidthStretch);
+                ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthFixed, 70.0f);
+                ImGui::TableHeadersRow();
 
-                std::string dim_str = std::to_string(tex.width) + "x" + std::to_string(tex.height);
-
-                if (hash_hex.find(filter_str) == std::string::npos &&
-                    dim_str.find(filter_str) == std::string::npos &&
-                    tex.format_short.find(filter_str) == std::string::npos)
+                for (const auto &tex : textures)
                 {
-                    continue;
+                    if (!filter_str.empty())
+                    {
+                        std::string h = tex.hash_hex;
+                        std::transform(h.begin(), h.end(), h.begin(), ::tolower);
+                        std::string dim = std::to_string(tex.width) + "x" + std::to_string(tex.height);
+                        std::string fmt = tex.format_short;
+                        std::transform(fmt.begin(), fmt.end(), fmt.begin(), ::tolower);
+                        if (h.find(filter_str) == std::string::npos &&
+                            dim.find(filter_str) == std::string::npos &&
+                            fmt.find(filter_str) == std::string::npos)
+                            continue;
+                    }
+
+                    ImGui::TableNextRow();
+
+                    ImGui::TableSetColumnIndex(0);
+                    std::string hash_str = "0x" + tex.hash_hex;
+                    bool selected = (s_selected_texture_hash == tex.hash);
+                    if (ImGui::Selectable(hash_str.c_str(), selected, ImGuiSelectableFlags_SpanAllColumns))
+                        s_selected_texture_hash = tex.hash;
+
+                    ImGui::TableSetColumnIndex(1);
+                    ImGui::Text("%ux%u", tex.width, tex.height);
+
+                    ImGui::TableSetColumnIndex(2);
+                    ImGui::Text("%u", tex.mip_levels);
+
+                    ImGui::TableSetColumnIndex(3);
+                    // format_short is "DX11_"/"D3D9_" + name; show the name part only.
+                    size_t us = tex.format_short.find('_');
+                    ImGui::TextUnformatted(us == std::string::npos ? tex.format_short.c_str()
+                                                                   : tex.format_short.c_str() + us + 1);
+
+                    ImGui::TableSetColumnIndex(4);
+                    ImGui::TextColored(status_color(tex.status), "%s", status_label(tex.status));
                 }
+                ImGui::EndTable();
             }
-            filtered_textures.push_back(tex);
-        }
-
-        ImGui::BeginChild("TextureListTableChild", ImVec2(0, 200), true);
-        static ImGuiTableFlags table_flags = ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable |
-                                             ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_ScrollY;
-
-        const TextureDetails* selected_texture_ptr = nullptr;
-
-        if (ImGui::BeginTable("TextureTable", 5, table_flags))
-        {
-            ImGui::TableSetupColumn("Hash", ImGuiTableColumnFlags_WidthFixed, 110.0f);
-            ImGui::TableSetupColumn("Dimensions", ImGuiTableColumnFlags_WidthFixed, 100.0f);
-            ImGui::TableSetupColumn("Format", ImGuiTableColumnFlags_WidthStretch);
-            ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthFixed, 110.0f);
-            ImGui::TableSetupColumn("Action", ImGuiTableColumnFlags_WidthFixed, 80.0f);
-            ImGui::TableHeadersRow();
-
-            for (size_t i = 0; i < filtered_textures.size(); ++i)
-            {
-                const auto &tex = filtered_textures[i];
-                if (s_selected_texture_hash == tex.hash)
-                {
-                    selected_texture_ptr = &tex;
-                }
-
-                ImGui::TableNextRow();
-
-                // Column 0: Hash
-                ImGui::TableSetColumnIndex(0);
-                std::string hash_str = "0x" + tex.hash_hex;
-                bool is_selected = (s_selected_texture_hash == tex.hash);
-                if (ImGui::Selectable(hash_str.c_str(), is_selected))
-                {
-                    s_selected_texture_hash = tex.hash;
-                }
-
-                // Column 1: Dimensions
-                ImGui::TableSetColumnIndex(1);
-                ImGui::Text("%u x %u", tex.width, tex.height);
-
-                // Column 2: Format
-                ImGui::TableSetColumnIndex(2);
-                ImGui::TextUnformatted(tex.format_short.c_str());
-
-                // Column 3: Status
-                ImGui::TableSetColumnIndex(3);
-                if (tex.status == TextureStatus::INJECTED)
-                {
-                    ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.3f, 1.0f), "[INJECTED]");
-                }
-                else if (tex.status == TextureStatus::DUMPED)
-                {
-                    ImGui::TextColored(ImVec4(0.3f, 0.8f, 1.0f, 1.0f), "[DUMPED]");
-                }
-                else
-                {
-                    ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "[ORIGINAL]");
-                }
-
-                // Column 4: Action (allow item overlap so button receives click priority over row selectable)
-                ImGui::TableSetColumnIndex(4);
-                ImGui::PushID(static_cast<int>(i));
-                ImGui::SetNextItemAllowOverlap();
-                if (ImGui::Button("Dump"))
-                {
-                    s_selected_texture_hash = tex.hash;
-                    tm.request_dump(tex.hash);
-                    SetStatusMessage("Queued dump for texture 0x" + tex.hash_hex + " to TT/dump");
-                }
-                ImGui::PopID();
-            }
-            ImGui::EndTable();
         }
         ImGui::EndChild();
 
-        // Detailed Texture Inspector Panel with Live Preview
-        if (selected_texture_ptr != nullptr)
+        ImGui::SameLine();
+
+        ImGui::BeginChild("inspector", ImVec2(0, avail_h), ImGuiChildFlags_Borders);
         {
-            ImGui::Spacing();
-            if (ImGui::CollapsingHeader("Selected Texture Inspector", ImGuiTreeNodeFlags_DefaultOpen))
-            {
-                // Only preview replacement resources we created and hold a reference to.
-                // Previewing an original texture via its raw resource_handle is unsafe:
-                // the game may have freed it (and the driver may have reused the pointer),
-                // which would make ImGui sample a dangling/foreign resource.
-                uint64_t tex_handle = selected_texture_ptr->replacement_handle;
+            // Keep the live-preview capture aimed at the current selection.
+            tm.set_preview_target(s_selected_texture_hash);
 
-                if (tex_handle != 0)
-                {
-                    float aspect = (selected_texture_ptr->height > 0) ? static_cast<float>(selected_texture_ptr->width) / static_cast<float>(selected_texture_ptr->height) : 1.0f;
-                    float preview_h = 130.0f;
-                    float preview_w = preview_h * aspect;
-                    if (preview_w > 240.0f)
-                    {
-                        preview_w = 240.0f;
-                        preview_h = preview_w / aspect;
-                    }
+            const TextureDetails *sel = nullptr;
+            for (const auto &t : textures)
+                if (t.hash == s_selected_texture_hash) { sel = &t; break; }
 
-                    ImGui::BeginGroup();
-                    ImGui::Text("Live Preview:");
-                    ImGui::Image(static_cast<ImTextureID>(tex_handle), ImVec2(preview_w, preview_h), ImVec2(0, 0), ImVec2(1, 1), ImVec4(1, 1, 1, 1), ImVec4(0.4f, 0.4f, 0.4f, 1.0f));
-                    ImGui::EndGroup();
-                    ImGui::SameLine(0.0f, 20.0f);
-                }
-
-                ImGui::BeginGroup();
-                ImGui::Text("Hash: 0x%s", selected_texture_ptr->hash_hex.c_str());
-                ImGui::SameLine();
-                if (ImGui::Button("Copy Hash"))
-                {
-                    std::string full_hash = "0x" + selected_texture_ptr->hash_hex;
-                    ImGui::SetClipboardText(full_hash.c_str());
-                    SetStatusMessage("Copied " + full_hash + " to clipboard.");
-                }
-
-                ImGui::Text("Dimensions: %u x %u", selected_texture_ptr->width, selected_texture_ptr->height);
-                ImGui::Text("Mip Levels: %u", selected_texture_ptr->mip_levels);
-                ImGui::Text("Format: %s", selected_texture_ptr->format_str.c_str());
-
-                ImGui::Text("Status: ");
-                ImGui::SameLine();
-                if (selected_texture_ptr->status == TextureStatus::INJECTED)
-                {
-                    ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.3f, 1.0f), "INJECTED (%s)", selected_texture_ptr->filepath_injected.c_str());
-                }
-                else if (selected_texture_ptr->status == TextureStatus::DUMPED)
-                {
-                    ImGui::TextColored(ImVec4(0.3f, 0.8f, 1.0f, 1.0f), "DUMPED (%s)", selected_texture_ptr->filepath_dumped.c_str());
-                }
-                else
-                {
-                    ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "ORIGINAL (No replacement file active)");
-                }
-
-                if (ImGui::Button("Dump Selected Texture"))
-                {
-                    tm.request_dump(selected_texture_ptr->hash);
-                    SetStatusMessage("Queued dump for texture 0x" + selected_texture_ptr->hash_hex);
-                }
-                ImGui::EndGroup();
-            }
+            if (sel != nullptr)
+                DrawInspector(tm, *sel);
+            else
+                ImGui::TextColored(kColMuted, "Select a texture to inspect it.");
         }
+        ImGui::EndChild();
 
-        // Status Bar
-        ImGui::Spacing();
-        ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f), "Status: %s", s_status_message.c_str());
+        ImGui::TextColored(kColMuted, "%s", s_status_message.c_str());
 
         ImGui::End();
     }
