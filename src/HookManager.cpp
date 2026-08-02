@@ -43,16 +43,4 @@ namespace TextureToolkit
         m_initialized = false;
         Logger::get().info("[HookManager] MinHook subsystem shut down successfully.");
     }
-
-    bool HookManager::remove_hook(void *target)
-    {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        if (!m_initialized || target == nullptr)
-            return false;
-
-        MH_DisableHook(target);
-        MH_RemoveHook(target);
-        m_active_hooks.erase(target);
-        return true;
-    }
 }

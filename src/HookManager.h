@@ -21,11 +21,10 @@ namespace TextureToolkit
         bool create_hook(void *target, void *detour, T **original)
         {
             std::lock_guard<std::mutex> lock(m_mutex);
-            if (!m_initialized)
-            {
-                if (!init()) return false;
-            }
-
+            // init() must have been called first (Main.cpp guarantees this). We must not
+            // call it here: it locks m_mutex, which we already hold, and the mutex is
+            // non-recursive -> deadlock. If MinHook is not initialized MH_CreateHook
+            // simply returns an error, handled below.
             MH_STATUS status = MH_CreateHook(target, detour, reinterpret_cast<void **>(original));
             if (status != MH_OK && status != MH_ERROR_ALREADY_CREATED)
             {
@@ -45,8 +44,6 @@ namespace TextureToolkit
             m_active_hooks[target] = reinterpret_cast<void *>(original);
             return true;
         }
-
-        bool remove_hook(void *target);
 
     private:
         HookManager() = default;

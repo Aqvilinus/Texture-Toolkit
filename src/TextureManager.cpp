@@ -205,11 +205,16 @@ namespace TextureToolkit
         GetModuleFileNameW(nullptr, exe_path, ARRAYSIZE(exe_path));
 
         m_game_dir = std::filesystem::path(exe_path).parent_path();
-        m_dump_dir = m_game_dir / "TT" / "dump";
-        m_inject_dir = m_game_dir / "TT" / "inject";
 
         // Load settings from config
         const auto& cfg = ConfigManager::get().get_config();
+
+        // Resolve the dump/inject directories from config. A relative path (the default,
+        // "TT/dump" / "TT/inject") is taken relative to the game directory; an absolute
+        // path is used as-is (operator/ returns the absolute right-hand side).
+        m_dump_dir = m_game_dir / cfg.dump_dir;
+        m_inject_dir = m_game_dir / cfg.inject_dir;
+
         auto_dump = cfg.auto_dump;
         enable_injection = cfg.enable_injection;
         filter_small_textures = cfg.filter_small_textures;
@@ -465,11 +470,9 @@ namespace TextureToolkit
         TextureDetails details;
         details.hash = hash;
         details.hash_hex = format_hash_hex(hash);
-        details.hash_hex_0x = format_hash_hex_0x(hash);
         details.width = width;
         details.height = height;
         details.mip_levels = original_levels;
-        details.format_id = static_cast<uint32_t>(format);
         details.format_str = "D3DFORMAT_" + d3d9_format_to_string(format);
         details.format_short = "D3D9_" + d3d9_format_to_string(format);
         details.resource_handle = handle;
@@ -678,11 +681,9 @@ namespace TextureToolkit
         TextureDetails details;
         details.hash = hash;
         details.hash_hex = format_hash_hex(hash);
-        details.hash_hex_0x = format_hash_hex_0x(hash);
         details.width = width;
         details.height = height;
         details.mip_levels = (original_levels == 0) ? full_mip_count(width, height) : original_levels;
-        details.format_id = static_cast<uint32_t>(format);
         details.format_str = "DXGI_FORMAT_" + std::to_string(static_cast<uint32_t>(format));
         details.format_short = "DX11_" + std::to_string(static_cast<uint32_t>(format));
         details.resource_handle = handle;

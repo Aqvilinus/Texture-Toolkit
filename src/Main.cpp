@@ -53,7 +53,7 @@ namespace TextureToolkit
 
 HMODULE g_our_module = nullptr;
 
-BOOL APIENTRY DllMain(HMODULE hModule, DWORD fdwReason, LPVOID)
+BOOL APIENTRY DllMain(HMODULE hModule, DWORD fdwReason, LPVOID lpvReserved)
 {
     switch (fdwReason)
     {
@@ -66,7 +66,14 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD fdwReason, LPVOID)
         break;
 
     case DLL_PROCESS_DETACH:
-        TextureToolkit::shutdown_standalone();
+        // lpvReserved != NULL means the PROCESS is terminating. Per MSDN, we must NOT do
+        // cleanup here: the OS is already tearing the process down and every other thread
+        // has been terminated, so joining our worker thread or calling COM Release()/D3D
+        // teardown under the loader lock deadlocks (observed as a black-screen hang when
+        // quitting Bully). The OS reclaims all of it anyway. Only clean up on an explicit
+        // FreeLibrary unload (lpvReserved == NULL), which is the safe, orderly case.
+        if (lpvReserved == nullptr)
+            TextureToolkit::shutdown_standalone();
         break;
     }
 

@@ -269,15 +269,11 @@ namespace TextureToolkit
             ImGui::Spacing();
             if (ImGui::CollapsingHeader("Selected Texture Inspector", ImGuiTreeNodeFlags_DefaultOpen))
             {
-                uint64_t tex_handle = 0;
-                if (selected_texture_ptr->replacement_handle != 0)
-                {
-                    tex_handle = selected_texture_ptr->replacement_handle;
-                }
-                else if (selected_texture_ptr->format_short.rfind("D3D9_", 0) == 0)
-                {
-                    tex_handle = selected_texture_ptr->resource_handle;
-                }
+                // Only preview replacement resources we created and hold a reference to.
+                // Previewing an original texture via its raw resource_handle is unsafe:
+                // the game may have freed it (and the driver may have reused the pointer),
+                // which would make ImGui sample a dangling/foreign resource.
+                uint64_t tex_handle = selected_texture_ptr->replacement_handle;
 
                 if (tex_handle != 0)
                 {
@@ -308,6 +304,7 @@ namespace TextureToolkit
                 }
 
                 ImGui::Text("Dimensions: %u x %u", selected_texture_ptr->width, selected_texture_ptr->height);
+                ImGui::Text("Mip Levels: %u", selected_texture_ptr->mip_levels);
                 ImGui::Text("Format: %s", selected_texture_ptr->format_str.c_str());
 
                 ImGui::Text("Status: ");

@@ -24,19 +24,13 @@ namespace TextureToolkit
     {
         uint32_t hash = 0;
         std::string hash_hex;
-        std::string hash_hex_0x;
-        
+
         uint32_t width = 0;
         uint32_t height = 0;
-        uint32_t depth_or_layers = 1;
         uint32_t mip_levels = 1;
-        uint32_t samples = 1;
 
-        uint32_t format_id = 0;
         std::string format_str;
         std::string format_short;
-        bool is_compressed = false;
-        bool is_srgb = false;
 
         TextureStatus status = TextureStatus::ORIGINAL;
         std::string filepath_dumped;
@@ -65,8 +59,6 @@ namespace TextureToolkit
         bool enable_injection = true;
         bool filter_small_textures = true;
         bool show_current_frame_only = false;
-
-        uint64_t get_current_frame() const { return m_frame_count; }
 
         // Active Texture Queries
         std::vector<TextureDetails> get_active_textures();

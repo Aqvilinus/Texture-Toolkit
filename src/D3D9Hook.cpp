@@ -268,10 +268,14 @@ namespace TextureToolkit
 
         g_inside_imgui_render = false;
         
-        // DX9 Present is outside of scene. We must BeginScene to draw ImGui successfully!
-        device->BeginScene();
-        ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
-        device->EndScene();
+        // DX9 Present is outside of a scene, so begin one to draw ImGui. Only end the
+        // scene if we actually began it (BeginScene fails if one is already open, in which
+        // case a matching EndScene would wrongly close the game's scene).
+        if (SUCCEEDED(device->BeginScene()))
+        {
+            ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
+            device->EndScene();
+        }
     }
 
     HRESULT WINAPI D3D9Hook::Hooked_CreateDevice(IDirect3D9 *d3d9, UINT Adapter, D3DDEVTYPE DeviceType, HWND hFocusWindow, DWORD BehaviorFlags, D3DPRESENT_PARAMETERS *pPresentationParameters, IDirect3DDevice9 **ppReturnDeviceInterface)
@@ -380,7 +384,7 @@ namespace TextureToolkit
                 {
                     s_logged_locks++;
                     std::string has_rect = (pRect != nullptr) ? "Yes" : "No";
-                    Logger::get().info("[D3D9Hook] Hooked_LockRect: Texture=0x" + std::to_string(reinterpret_cast<uintptr_t>(texture)) + " Width=" + std::to_string(desc.Width) + " Height=" + std::to_string(desc.Height) + " pRect=" + has_rect);
+                    Logger::get().debug("[D3D9Hook] Hooked_LockRect: Texture=0x" + std::to_string(reinterpret_cast<uintptr_t>(texture)) + " Width=" + std::to_string(desc.Width) + " Height=" + std::to_string(desc.Height) + " pRect=" + has_rect);
                 }
 
                 // Ignore partial sub-rect locks (cannot safely hash/dump whole texture)
@@ -430,7 +434,7 @@ namespace TextureToolkit
                 if (s_logged_unlocks < 20)
                 {
                     s_logged_unlocks++;
-                    Logger::get().info("[D3D9Hook] Hooked_UnlockRect: Registering texture=0x" + std::to_string(reinterpret_cast<uintptr_t>(texture)));
+                    Logger::get().debug("[D3D9Hook] Hooked_UnlockRect: Registering texture=0x" + std::to_string(reinterpret_cast<uintptr_t>(texture)));
                 }
 
                 TextureManager::get().register_unmap_texture9(
@@ -456,7 +460,7 @@ namespace TextureToolkit
         if (s_logged_set_texture_calls < 20 && pTexture != nullptr)
         {
             s_logged_set_texture_calls++;
-            Logger::get().info("[D3D9Hook] Hooked_SetTexture: Stage=" + std::to_string(Stage) + " pTexture=0x" + std::to_string(reinterpret_cast<uintptr_t>(pTexture)));
+            Logger::get().debug("[D3D9Hook] Hooked_SetTexture: Stage=" + std::to_string(Stage) + " pTexture=0x" + std::to_string(reinterpret_cast<uintptr_t>(pTexture)));
         }
 
         IDirect3DBaseTexture9 *pReplacement = TextureManager::get().get_replacement_texture9(pTexture);
@@ -484,7 +488,7 @@ namespace TextureToolkit
                     {
                         s_logged_surf_locks++;
                         std::string has_rect = (pRect != nullptr) ? "Yes" : "No";
-                        Logger::get().info("[D3D9Hook] Hooked_SurfaceLockRect: Surface=0x" + std::to_string(reinterpret_cast<uintptr_t>(surface)) + " ParentTexture=0x" + std::to_string(reinterpret_cast<uintptr_t>(texture)) + " Width=" + std::to_string(desc.Width) + " Height=" + std::to_string(desc.Height) + " pRect=" + has_rect);
+                        Logger::get().debug("[D3D9Hook] Hooked_SurfaceLockRect: Surface=0x" + std::to_string(reinterpret_cast<uintptr_t>(surface)) + " ParentTexture=0x" + std::to_string(reinterpret_cast<uintptr_t>(texture)) + " Width=" + std::to_string(desc.Width) + " Height=" + std::to_string(desc.Height) + " pRect=" + has_rect);
                     }
 
                     // Check if pRect covers the full surface
@@ -536,7 +540,7 @@ namespace TextureToolkit
                 if (s_logged_surf_unlocks < 20)
                 {
                     s_logged_surf_unlocks++;
-                    Logger::get().info("[D3D9Hook] Hooked_SurfaceUnlockRect: Registering parent texture=0x" + std::to_string(reinterpret_cast<uintptr_t>(texture)));
+                    Logger::get().debug("[D3D9Hook] Hooked_SurfaceUnlockRect: Registering parent texture=0x" + std::to_string(reinterpret_cast<uintptr_t>(texture)));
                 }
 
                 TextureManager::get().register_unmap_texture9(

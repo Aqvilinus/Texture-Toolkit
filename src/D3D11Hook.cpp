@@ -207,7 +207,7 @@ namespace TextureToolkit
         {
             s_logged_creations++;
             std::string has_init_data = (pInitialData != nullptr) ? "Yes" : "No";
-            Logger::get().info("[D3D11Hook] Hooked_CreateTexture2D: Width=" + std::to_string(pDesc->Width) + ", Height=" + std::to_string(pDesc->Height) + ", Format=" + std::to_string(static_cast<uint32_t>(pDesc->Format)) + ", InitialData=" + has_init_data + ", Usage=" + std::to_string(pDesc->Usage) + ", BindFlags=" + std::to_string(pDesc->BindFlags));
+            Logger::get().debug("[D3D11Hook] Hooked_CreateTexture2D: Width=" + std::to_string(pDesc->Width) + ", Height=" + std::to_string(pDesc->Height) + ", Format=" + std::to_string(static_cast<uint32_t>(pDesc->Format)) + ", InitialData=" + has_init_data + ", Usage=" + std::to_string(pDesc->Usage) + ", BindFlags=" + std::to_string(pDesc->BindFlags));
         }
 
         HRESULT hr = get().m_orig_create_texture2d(device, pDesc, pInitialData, ppTexture2D);
@@ -223,7 +223,7 @@ namespace TextureToolkit
                     {
                         if (s_logged_creations < 50)
                         {
-                            Logger::get().info("[D3D11Hook] Hooked_CreateTexture2D: Registering texture!");
+                            Logger::get().debug("[D3D11Hook] Hooked_CreateTexture2D: Registering texture!");
                         }
                         TextureManager::get().register_unmap_texture11(
                             device,
@@ -511,20 +511,24 @@ namespace TextureToolkit
             return;
         }
 
-        static int s_logged_ps_sets = 0;
-        if (s_logged_ps_sets < 20)
-        {
-            s_logged_ps_sets++;
-            Logger::get().info("[D3D11Hook] Hooked_PSSetShaderResources: NumViews=" + std::to_string(NumViews) + ", first SRV=0x" + std::to_string(reinterpret_cast<uintptr_t>(ppShaderResourceViews[0])));
-        }
+        // This is a per-draw hot path. Reuse a thread-local buffer (immediate + any
+        // deferred contexts share this hooked vtable slot, so keep it thread-local) to
+        // avoid a heap allocation on every call, and only pass a rewritten array when a
+        // replacement actually applied.
+        static thread_local std::vector<ID3D11ShaderResourceView *> s_replaced;
+        s_replaced.resize(NumViews);
 
-        std::vector<ID3D11ShaderResourceView *> replaced_views(NumViews);
+        bool any_replaced = false;
         for (UINT i = 0; i < NumViews; ++i)
         {
-            replaced_views[i] = TextureManager::get().get_replacement_srv11(ppShaderResourceViews[i]);
+            ID3D11ShaderResourceView *r = TextureManager::get().get_replacement_srv11(ppShaderResourceViews[i]);
+            s_replaced[i] = r;
+            if (r != ppShaderResourceViews[i])
+                any_replaced = true;
         }
 
-        get().m_orig_ps_set_shader_resources(context, StartSlot, NumViews, replaced_views.data());
+        get().m_orig_ps_set_shader_resources(context, StartSlot, NumViews,
+            any_replaced ? s_replaced.data() : ppShaderResourceViews);
     }
 
     HRESULT STDMETHODCALLTYPE D3D11Hook::Hooked_Map(ID3D11DeviceContext *context, ID3D11Resource *pResource, UINT Subresource, D3D11_MAP MapType, UINT MapFlags, D3D11_MAPPED_SUBRESOURCE *pMappedResource)
@@ -537,7 +541,7 @@ namespace TextureToolkit
             if (s_logged_maps < 20)
             {
                 s_logged_maps++;
-                Logger::get().info("[D3D11Hook] Hooked_Map: resource=0x" + std::to_string(reinterpret_cast<uintptr_t>(pResource)));
+                Logger::get().debug("[D3D11Hook] Hooked_Map: resource=0x" + std::to_string(reinterpret_cast<uintptr_t>(pResource)));
             }
 
             MappedResourceData data;
@@ -573,7 +577,7 @@ namespace TextureToolkit
                     if (s_logged_unmaps < 20)
                     {
                         s_logged_unmaps++;
-                        Logger::get().info("[D3D11Hook] Hooked_Unmap: Registering texture=0x" + std::to_string(reinterpret_cast<uintptr_t>(pResource)));
+                        Logger::get().debug("[D3D11Hook] Hooked_Unmap: Registering texture=0x" + std::to_string(reinterpret_cast<uintptr_t>(pResource)));
                     }
 
                     ID3D11Device *device = nullptr;

@@ -53,25 +53,4 @@ namespace TextureToolkit
         std::snprintf(buf, sizeof(buf), "%08X", hash);
         return std::string(buf);
     }
-
-    std::string format_hash_hex_0x(uint32_t hash)
-    {
-        char buf[16];
-        std::snprintf(buf, sizeof(buf), "0x%08X", hash);
-        return std::string(buf);
-    }
-
-    uint32_t calculate_texture_hash(const reshade::api::resource_desc &desc, const reshade::api::subresource_data &data)
-    {
-        if (data.data == nullptr)
-            return 0;
-
-        size_t size = reshade::api::format_slice_pitch(desc.texture.format, data.row_pitch, desc.texture.height);
-        if (size == 0)
-        {
-            size = static_cast<size_t>(desc.texture.width) * static_cast<size_t>(desc.texture.height) * 4;
-        }
-
-        return compute_crc32(static_cast<const uint8_t *>(data.data), size);
-    }
 }
