@@ -284,11 +284,22 @@ namespace TextureToolkit
             ConfigManager::get().save();
         }
 
-        ImGui::SameLine(0.0f, 24.0f);
-        if (ImGui::Button("Reload injects"))
+        if (ImGui::Button("Reload injected textures"))
         {
             tm.rescan_injected();
             SetStatusMessage("Rescanned TT/inject for DDS replacements.");
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Dump all"))
+        {
+            size_t n = tm.dump_all(tm.show_current_frame_only);
+            SetStatusMessage("Dump-all queued " + std::to_string(n) + (tm.show_current_frame_only ? " active" : " tracked") + " texture(s); written as they draw.");
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Clear list"))
+        {
+            tm.clear_tracked();
+            SetStatusMessage("Cleared the tracked texture list.");
         }
         ImGui::SameLine();
         if (ImGui::Button("Dump folder"))

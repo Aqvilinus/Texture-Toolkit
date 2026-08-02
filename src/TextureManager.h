@@ -103,6 +103,14 @@ namespace TextureToolkit
         // reference when the texture is the current selection, otherwise the tracked handle.
         bool request_dump(uint32_t hash);
 
+        // Queues a bulk dump. scene_only limits it to textures active this scene, otherwise
+        // every tracked texture. Each is written the next time the game draws it (using the
+        // live handle, so it is safe against pointer reuse). Returns the number queued.
+        size_t dump_all(bool scene_only);
+
+        // Empties the tracked-texture list. Entries repopulate as textures are drawn again.
+        void clear_tracked();
+
         // Queues an async dump from CPU pixel data already in hand (used by auto-dump).
         bool dump_texture(uint32_t hash, UINT width, UINT height, DXGI_FORMAT format, const void *data, UINT row_pitch);
 
@@ -166,6 +174,23 @@ namespace TextureToolkit
         // Writes a single-mip DDS to TT/dump from CPU pixel data. Returns the file path, or
         // empty on failure. Does not touch tracked state; the caller updates status.
         std::string write_dump_dds(uint32_t hash, UINT width, UINT height, DXGI_FORMAT format, const void *data, UINT row_pitch);
+
+        // GPU readback + write for one live resource. Return the file path or empty.
+        std::string dump_resource11(uint32_t hash, ID3D11Resource *res);
+        std::string dump_base_texture9(uint32_t hash, IDirect3DBaseTexture9 *base);
+
+        // Bulk-dump plumbing (see dump_all). m_pending_dumps holds hashes waiting to be
+        // drawn; when drawn we take a reference into m_readback_queue and drain it a few per
+        // frame in on_frame. Caller of process_readback_queue MUST hold m_mutex.
+        struct PendingReadback
+        {
+            uint32_t hash = 0;
+            IDirect3DBaseTexture9 *tex9 = nullptr;
+            ID3D11ShaderResourceView *srv11 = nullptr;
+        };
+        std::unordered_set<uint32_t> m_pending_dumps;
+        std::vector<PendingReadback> m_readback_queue;
+        void process_readback_queue();
 
         std::filesystem::path find_injection_path(uint32_t hash);
     };

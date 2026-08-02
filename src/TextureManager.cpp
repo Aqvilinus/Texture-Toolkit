@@ -312,6 +312,13 @@ namespace TextureToolkit
         std::lock_guard<std::mutex> lock(m_mutex);
         release_replacements();
         release_preview();
+
+        for (auto &rb : m_readback_queue)
+        {
+            if (rb.tex9) rb.tex9->Release();
+            if (rb.srv11) rb.srv11->Release();
+        }
+        m_readback_queue.clear();
     }
 
     void TextureManager::set_preview_target(uint32_t hash)
@@ -500,6 +507,8 @@ namespace TextureToolkit
             if (it != m_tracked_textures.end())
                 it->second.last_seen_frame = m_frame_count;
         }
+
+        process_readback_queue();
     }
 
     void TextureManager::rescan_injected()
@@ -571,6 +580,18 @@ namespace TextureToolkit
         {
             orig->AddRef();
             m_preview_tex9 = orig;
+        }
+
+        // Bulk dump: take a reference the first time a queued texture is drawn.
+        if (!m_pending_dumps.empty())
+        {
+            auto pit = m_pending_dumps.find(hash);
+            if (pit != m_pending_dumps.end())
+            {
+                m_pending_dumps.erase(pit);
+                orig->AddRef();
+                m_readback_queue.push_back({hash, orig, nullptr});
+            }
         }
 
         if (!enable_injection)
@@ -867,6 +888,18 @@ namespace TextureToolkit
             m_preview_srv11 = orig;
         }
 
+        // Bulk dump: take a reference the first time a queued texture is drawn.
+        if (!m_pending_dumps.empty())
+        {
+            auto pit = m_pending_dumps.find(hash);
+            if (pit != m_pending_dumps.end())
+            {
+                m_pending_dumps.erase(pit);
+                orig->AddRef();
+                m_readback_queue.push_back({hash, nullptr, orig});
+            }
+        }
+
         if (!enable_injection)
             return orig;
 
@@ -1140,6 +1173,82 @@ namespace TextureToolkit
         }
     }
 
+    std::string TextureManager::dump_resource11(uint32_t hash, ID3D11Resource *res)
+    {
+        ID3D11Device *device = D3D11Hook::get().get_device();
+        ID3D11DeviceContext *ctx = D3D11Hook::get().get_context();
+        if (device == nullptr || ctx == nullptr || res == nullptr)
+            return {};
+
+        std::string path;
+        ID3D11Texture2D *tex2d = nullptr;
+        if (SUCCEEDED(res->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void **>(&tex2d))) && tex2d != nullptr)
+        {
+            D3D11_TEXTURE2D_DESC desc = {};
+            tex2d->GetDesc(&desc);
+
+            D3D11_TEXTURE2D_DESC staging = desc;
+            staging.Usage = D3D11_USAGE_STAGING;
+            staging.BindFlags = 0;
+            staging.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+            staging.MiscFlags = 0;
+
+            ID3D11Texture2D *staging_tex = nullptr;
+            D3D11Hook::s_inside_injection = true;
+            HRESULT hr = device->CreateTexture2D(&staging, nullptr, &staging_tex);
+            D3D11Hook::s_inside_injection = false;
+
+            if (SUCCEEDED(hr) && staging_tex != nullptr)
+            {
+                ctx->CopyResource(staging_tex, tex2d);
+                D3D11_MAPPED_SUBRESOURCE mapped = {};
+                if (SUCCEEDED(ctx->Map(staging_tex, 0, D3D11_MAP_READ, 0, &mapped)) && mapped.pData != nullptr)
+                {
+                    path = write_dump_dds(hash, desc.Width, desc.Height, desc.Format, mapped.pData, mapped.RowPitch);
+                    ctx->Unmap(staging_tex, 0);
+                }
+                staging_tex->Release();
+            }
+            tex2d->Release();
+        }
+        return path;
+    }
+
+    std::string TextureManager::dump_base_texture9(uint32_t hash, IDirect3DBaseTexture9 *base)
+    {
+        if (base == nullptr)
+            return {};
+
+        std::string path;
+        IDirect3DTexture9 *tex = nullptr;
+        if (SUCCEEDED(base->QueryInterface(__uuidof(IDirect3DTexture9), reinterpret_cast<void **>(&tex))) && tex != nullptr)
+        {
+            D3DSURFACE_DESC sd = {};
+            if (SUCCEEDED(tex->GetLevelDesc(0, &sd)))
+            {
+                DXGI_FORMAT dxgi = d3d9_format_to_dxgi(sd.Format);
+                D3DLOCKED_RECT lr = {};
+
+                D3D9Hook::s_inside_injection = true;
+                HRESULT hr = tex->LockRect(0, &lr, nullptr, D3DLOCK_READONLY);
+                if (SUCCEEDED(hr))
+                {
+                    if (lr.pBits != nullptr && dxgi != DXGI_FORMAT_UNKNOWN)
+                        path = write_dump_dds(hash, sd.Width, sd.Height, dxgi, lr.pBits, lr.Pitch);
+                    tex->UnlockRect(0);
+                }
+                D3D9Hook::s_inside_injection = false;
+
+                if (dxgi == DXGI_FORMAT_UNKNOWN)
+                    Logger::get().error("[TextureManager] Cannot dump 0x" + format_hash_hex(hash) + ": unsupported D3D9 format for DDS export.");
+                else if (FAILED(hr))
+                    Logger::get().error("[TextureManager] Cannot dump 0x" + format_hash_hex(hash) + ": LockRect failed (texture may be in the default pool).");
+            }
+            tex->Release();
+        }
+        return path;
+    }
+
     bool TextureManager::request_dump(uint32_t hash)
     {
         std::lock_guard<std::mutex> lock(m_mutex);
@@ -1149,17 +1258,10 @@ namespace TextureToolkit
             return false;
         TextureDetails &d = it->second;
 
-        std::string dumped_path;
-
+        std::string path;
         if (d.is_dx11)
         {
-            ID3D11Device *device = D3D11Hook::get().get_device();
-            ID3D11DeviceContext *ctx = D3D11Hook::get().get_context();
-            if (device == nullptr || ctx == nullptr)
-                return false;
-
-            // Prefer the pinned live SRV's resource (guaranteed alive); otherwise use the
-            // tracked handle.
+            // Prefer the pinned live SRV's resource (guaranteed alive); else the tracked handle.
             ID3D11Resource *res = nullptr;
             if (hash == m_preview_target_hash && m_preview_srv11 != nullptr)
                 m_preview_srv11->GetResource(&res);
@@ -1168,44 +1270,14 @@ namespace TextureToolkit
                 res = reinterpret_cast<ID3D11Resource *>(d.resource_handle);
                 res->AddRef();
             }
-            if (res == nullptr)
-                return false;
-
-            ID3D11Texture2D *tex2d = nullptr;
-            if (SUCCEEDED(res->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void **>(&tex2d))) && tex2d != nullptr)
+            if (res != nullptr)
             {
-                D3D11_TEXTURE2D_DESC desc = {};
-                tex2d->GetDesc(&desc);
-
-                D3D11_TEXTURE2D_DESC staging = desc;
-                staging.Usage = D3D11_USAGE_STAGING;
-                staging.BindFlags = 0;
-                staging.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-                staging.MiscFlags = 0;
-
-                ID3D11Texture2D *staging_tex = nullptr;
-                D3D11Hook::s_inside_injection = true;
-                HRESULT hr = device->CreateTexture2D(&staging, nullptr, &staging_tex);
-                D3D11Hook::s_inside_injection = false;
-
-                if (SUCCEEDED(hr) && staging_tex != nullptr)
-                {
-                    ctx->CopyResource(staging_tex, tex2d);
-                    D3D11_MAPPED_SUBRESOURCE mapped = {};
-                    if (SUCCEEDED(ctx->Map(staging_tex, 0, D3D11_MAP_READ, 0, &mapped)) && mapped.pData != nullptr)
-                    {
-                        dumped_path = write_dump_dds(hash, desc.Width, desc.Height, desc.Format, mapped.pData, mapped.RowPitch);
-                        ctx->Unmap(staging_tex, 0);
-                    }
-                    staging_tex->Release();
-                }
-                tex2d->Release();
+                path = dump_resource11(hash, res);
+                res->Release();
             }
-            res->Release();
         }
         else
         {
-            // DX9: read back the top mip via LockRect.
             IDirect3DBaseTexture9 *base = nullptr;
             if (hash == m_preview_target_hash && m_preview_tex9 != nullptr)
             {
@@ -1217,45 +1289,88 @@ namespace TextureToolkit
                 base = reinterpret_cast<IDirect3DBaseTexture9 *>(d.resource_handle);
                 base->AddRef();
             }
-            if (base == nullptr)
-                return false;
-
-            IDirect3DTexture9 *tex = nullptr;
-            if (SUCCEEDED(base->QueryInterface(__uuidof(IDirect3DTexture9), reinterpret_cast<void **>(&tex))) && tex != nullptr)
+            if (base != nullptr)
             {
-                D3DSURFACE_DESC sd = {};
-                if (SUCCEEDED(tex->GetLevelDesc(0, &sd)))
-                {
-                    DXGI_FORMAT dxgi = d3d9_format_to_dxgi(sd.Format);
-                    D3DLOCKED_RECT lr = {};
-
-                    D3D9Hook::s_inside_injection = true;
-                    HRESULT hr = tex->LockRect(0, &lr, nullptr, D3DLOCK_READONLY);
-                    if (SUCCEEDED(hr))
-                    {
-                        if (lr.pBits != nullptr && dxgi != DXGI_FORMAT_UNKNOWN)
-                            dumped_path = write_dump_dds(hash, sd.Width, sd.Height, dxgi, lr.pBits, lr.Pitch);
-                        tex->UnlockRect(0);
-                    }
-                    D3D9Hook::s_inside_injection = false;
-
-                    if (dxgi == DXGI_FORMAT_UNKNOWN)
-                        Logger::get().error("[TextureManager] Cannot dump 0x" + format_hash_hex(hash) + ": unsupported D3D9 format for DDS export.");
-                    else if (FAILED(hr))
-                        Logger::get().error("[TextureManager] Cannot dump 0x" + format_hash_hex(hash) + ": LockRect failed (texture may be in the default pool).");
-                }
-                tex->Release();
+                path = dump_base_texture9(hash, base);
+                base->Release();
             }
-            base->Release();
         }
 
-        if (!dumped_path.empty())
+        if (!path.empty())
         {
             d.status = TextureStatus::DUMPED;
-            d.filepath_dumped = dumped_path;
-            Logger::get().info("[TextureManager] Dumped 0x" + format_hash_hex(hash) + " to " + dumped_path);
+            d.filepath_dumped = path;
+            Logger::get().info("[TextureManager] Dumped 0x" + format_hash_hex(hash) + " to " + path);
             return true;
         }
         return false;
+    }
+
+    size_t TextureManager::dump_all(bool scene_only)
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        size_t queued = 0;
+        for (auto &pair : m_tracked_textures)
+        {
+            if (scene_only)
+            {
+                const TextureDetails &d = pair.second;
+                bool active = d.last_seen_frame != 0 && !(m_frame_count > 0 && d.last_seen_frame + 60 < m_frame_count);
+                if (!active)
+                    continue;
+            }
+            m_pending_dumps.insert(pair.first);
+            ++queued;
+        }
+        Logger::get().info("[TextureManager] Dump-all queued " + std::to_string(queued) + (scene_only ? " active" : " tracked") + " texture(s); each is written the next time it is drawn.");
+        return queued;
+    }
+
+    void TextureManager::clear_tracked()
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_tracked_textures.clear();
+        m_current_frame_hashes.clear();
+        m_active_frame_hashes.clear();
+        m_pending_dumps.clear();
+    }
+
+    // Drains a few queued bulk-dump readbacks per frame. Caller MUST hold m_mutex.
+    void TextureManager::process_readback_queue()
+    {
+        int budget = 8;
+        while (!m_readback_queue.empty() && budget-- > 0)
+        {
+            PendingReadback rb = m_readback_queue.back();
+            m_readback_queue.pop_back();
+
+            std::string path;
+            if (rb.srv11 != nullptr)
+            {
+                ID3D11Resource *res = nullptr;
+                rb.srv11->GetResource(&res);
+                if (res != nullptr)
+                {
+                    path = dump_resource11(rb.hash, res);
+                    res->Release();
+                }
+                rb.srv11->Release();
+            }
+            else if (rb.tex9 != nullptr)
+            {
+                path = dump_base_texture9(rb.hash, rb.tex9);
+                rb.tex9->Release();
+            }
+
+            if (!path.empty())
+            {
+                auto it = m_tracked_textures.find(rb.hash);
+                if (it != m_tracked_textures.end())
+                {
+                    it->second.status = TextureStatus::DUMPED;
+                    it->second.filepath_dumped = path;
+                }
+            }
+        }
     }
 }
