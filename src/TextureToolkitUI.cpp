@@ -1,6 +1,7 @@
 #include "TextureToolkitUI.h"
 #include "TextureManager.h"
 #include "OSDBanner.h"
+#include "Config.h"
 #include "Logger.h"
 #include <windows.h>
 #include <shellapi.h>
@@ -85,11 +86,10 @@ namespace TextureToolkit
 
     // Draws one labeled thumbnail. handle is a native texture id (IDirect3DBaseTexture9*
     // on DX9, ID3D11ShaderResourceView* on DX11). 0 draws a placeholder.
-    static void DrawThumbnail(const char *label, uint64_t handle, uint32_t w, uint32_t h, const char *empty_hint)
+    static void DrawThumbnail(const char *label, uint64_t handle, uint32_t w, uint32_t h, float box, const char *empty_hint)
     {
-        const float box = 150.0f;
         ImGui::BeginGroup();
-        ImGui::TextUnformatted(label);
+        ImGui::Text("%s  %ux%u", label, w, h);
 
         if (handle != 0)
         {
@@ -121,7 +121,7 @@ namespace TextureToolkit
         ImGui::TableSetColumnIndex(0);
         ImGui::TextColored(kColMuted, "%s", label);
         ImGui::TableSetColumnIndex(1);
-        ImGui::TextUnformatted(value);
+        ImGui::TextWrapped("%s", value);
     }
 
     static void DrawInspector(TextureManager &tm, const TextureDetails &tex)
@@ -131,7 +131,7 @@ namespace TextureToolkit
         std::string hash = "0x" + tex.hash_hex;
         ImGui::TextColored(status_color(tex.status), "%s", hash.c_str());
         ImGui::SameLine();
-        if (ImGui::SmallButton("Copy"))
+        if (ImGui::SmallButton("Copy hash"))
         {
             ImGui::SetClipboardText(hash.c_str());
             SetStatusMessage("Copied " + hash + " to clipboard.");
@@ -139,32 +139,61 @@ namespace TextureToolkit
         ImGui::SameLine();
         if (ImGui::SmallButton("Dump"))
         {
-            tm.request_dump(tex.hash);
-            SetStatusMessage("Queued dump for " + hash + " to TT/dump.");
+            if (tm.request_dump(tex.hash))
+                SetStatusMessage("Dumped " + hash + " to TT/dump.");
+            else
+                SetStatusMessage("Dump failed for " + hash + " (see log).");
         }
 
         ImGui::Spacing();
 
-        // Previews: the live original (pinned when the texture is bound this frame) and
-        // the injected replacement (if one is active).
-        uint64_t original_handle = tm.get_original_preview_handle();
-        DrawThumbnail("Original", original_handle, tex.width, tex.height,
-                      original_handle ? "" : "Not in current scene");
+        // One preview, chosen by what is available and useful:
+        //   injected  -> the replacement we injected
+        //   in scene  -> the live original the game is binding
+        //   dumped    -> the dumped .dds loaded from disk
+        uint64_t handle = 0;
+        const char *src = "Original";
+        uint32_t pw = tex.width, ph = tex.height;
         if (tex.replacement_handle != 0)
         {
-            ImGui::SameLine(0.0f, 16.0f);
-            DrawThumbnail("Replacement", tex.replacement_handle, tex.width, tex.height, "");
+            handle = tex.replacement_handle;
+            src = "Replacement";
+            pw = tex.repl_width;
+            ph = tex.repl_height;
         }
+        else if ((handle = tm.get_original_preview_handle()) != 0)
+        {
+            src = "Original (in scene)";
+        }
+        else if (!tex.filepath_dumped.empty())
+        {
+            handle = tm.get_file_preview_handle(tex.hash, tex.filepath_dumped, tex.is_dx11);
+            if (handle != 0)
+                src = "Original (from dump)";
+        }
+
+        float box = (std::min)(ImGui::GetContentRegionAvail().x, 256.0f);
+        DrawThumbnail(src, handle, pw, ph, box, "Not in scene, no dump");
 
         ImGui::Spacing();
 
-        // Metadata grid.
-        if (ImGui::BeginTable("meta", 2, ImGuiTableFlags_SizingFixedFit))
+        // Metadata grid: fixed label column, stretching value column so a long format
+        // name does not force the whole panel wider.
+        if (ImGui::BeginTable("meta", 2, ImGuiTableFlags_None))
         {
+            ImGui::TableSetupColumn("k", ImGuiTableColumnFlags_WidthFixed, 84.0f);
+            ImGui::TableSetupColumn("v", ImGuiTableColumnFlags_WidthStretch);
+
             char buf[128];
 
             std::snprintf(buf, sizeof(buf), "%u x %u", tex.width, tex.height);
             MetaRow("Dimensions", buf);
+
+            if (tex.replacement_handle != 0)
+            {
+                std::snprintf(buf, sizeof(buf), "%u x %u", tex.repl_width, tex.repl_height);
+                MetaRow("Replacement", buf);
+            }
 
             std::snprintf(buf, sizeof(buf), "%u", tex.mip_levels);
             MetaRow("Mip levels", buf);
@@ -236,14 +265,24 @@ namespace TextureToolkit
             return;
         }
 
-        // Toolbar: toggles and folder shortcuts.
-        ImGui::Checkbox("Injection", &tm.enable_injection);
+        // Toolbar: toggles and folder shortcuts. Toggling any option persists to the INI.
+        bool changed = false;
+        changed |= ImGui::Checkbox("Injection", &tm.enable_injection);
         ImGui::SameLine();
-        ImGui::Checkbox("Auto-dump", &tm.auto_dump);
+        changed |= ImGui::Checkbox("Auto-dump", &tm.auto_dump);
         ImGui::SameLine();
-        ImGui::Checkbox("Skip < 16px", &tm.filter_small_textures);
+        changed |= ImGui::Checkbox("Skip < 16px", &tm.filter_small_textures);
         ImGui::SameLine();
-        ImGui::Checkbox("Scene only", &tm.show_current_frame_only);
+        changed |= ImGui::Checkbox("Scene only", &tm.show_current_frame_only);
+        if (changed)
+        {
+            Configuration &cfg = ConfigManager::get().get_config();
+            cfg.enable_injection = tm.enable_injection;
+            cfg.auto_dump = tm.auto_dump;
+            cfg.filter_small_textures = tm.filter_small_textures;
+            cfg.show_current_frame_only = tm.show_current_frame_only;
+            ConfigManager::get().save();
+        }
 
         ImGui::SameLine(0.0f, 24.0f);
         if (ImGui::Button("Reload injects"))
@@ -283,11 +322,15 @@ namespace TextureToolkit
         std::string filter_str = s_filter_buf;
         std::transform(filter_str.begin(), filter_str.end(), filter_str.begin(), ::tolower);
 
-        // Two panes: list on the left, inspector on the right.
-        const float inspector_w = 360.0f;
+        // Two resizable panes: list on the left, inspector on the right. Both scale with
+        // the window; drag the divider between them to change the split.
+        static float s_split = 0.55f; // list fraction of the width; the rest is the inspector
+        const float splitter_w = 6.0f;
+        float total_w = ImGui::GetContentRegionAvail().x;
         float avail_h = ImGui::GetContentRegionAvail().y - ImGui::GetFrameHeightWithSpacing();
+        float list_w = (total_w - splitter_w) * s_split;
 
-        ImGui::BeginChild("list", ImVec2(-inspector_w, avail_h), ImGuiChildFlags_Borders);
+        ImGui::BeginChild("list", ImVec2(list_w, avail_h), ImGuiChildFlags_Borders);
         {
             ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY |
                                     ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV |
@@ -346,7 +389,15 @@ namespace TextureToolkit
         }
         ImGui::EndChild();
 
-        ImGui::SameLine();
+        // Draggable divider.
+        ImGui::SameLine(0.0f, 0.0f);
+        ImGui::InvisibleButton("##splitter", ImVec2(splitter_w, avail_h));
+        if (ImGui::IsItemActive())
+            s_split += ImGui::GetIO().MouseDelta.x / (total_w - splitter_w);
+        s_split = s_split < 0.25f ? 0.25f : (s_split > 0.80f ? 0.80f : s_split);
+        if (ImGui::IsItemHovered() || ImGui::IsItemActive())
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+        ImGui::SameLine(0.0f, 0.0f);
 
         ImGui::BeginChild("inspector", ImVec2(0, avail_h), ImGuiChildFlags_Borders);
         {

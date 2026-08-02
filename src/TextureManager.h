@@ -25,9 +25,12 @@ namespace TextureToolkit
         uint32_t hash = 0;
         std::string hash_hex;
 
-        uint32_t width = 0;
+        uint32_t width = 0;          // original game-texture dimensions
         uint32_t height = 0;
         uint32_t mip_levels = 1;
+
+        uint32_t repl_width = 0;     // injected replacement dimensions (0 if not injected)
+        uint32_t repl_height = 0;
 
         uint32_t format_id = 0;      // native DXGI_FORMAT / D3DFORMAT value
         std::string format_str;      // full name, e.g. "DXGI_FORMAT_BC3_UNORM"
@@ -82,6 +85,11 @@ namespace TextureToolkit
         void set_preview_target(uint32_t hash);
         uint64_t get_original_preview_handle();
 
+        // Loads a dumped .dds from disk into a GPU texture for preview and caches it (one
+        // at a time, released when the selection changes). Lets us show textures that are
+        // not currently on screen. Returns a native texture id, or 0 on failure.
+        uint64_t get_file_preview_handle(uint32_t hash, const std::string &dds_path, bool is_dx11);
+
         // Virtual Replacements for DX9
         IDirect3DBaseTexture9 *get_replacement_texture9(IDirect3DBaseTexture9 *orig);
         void register_unmap_texture9(IDirect3DDevice9 *device, IDirect3DTexture9 *texture, const void *pixel_data, UINT width, UINT height, D3DFORMAT format, UINT pitch);
@@ -90,8 +98,12 @@ namespace TextureToolkit
         ID3D11ShaderResourceView *get_replacement_srv11(ID3D11ShaderResourceView *orig);
         void register_unmap_texture11(ID3D11Device *device, ID3D11Resource *resource, const void *pixel_data, UINT width, UINT height, DXGI_FORMAT format, UINT pitch);
 
-        // Dump Helpers
-        void request_dump(uint32_t hash);
+        // Dumps a texture to TT/dump immediately (synchronously, on the calling thread) and
+        // returns true on success. Reads back the live GPU resource: the pinned preview
+        // reference when the texture is the current selection, otherwise the tracked handle.
+        bool request_dump(uint32_t hash);
+
+        // Queues an async dump from CPU pixel data already in hand (used by auto-dump).
         bool dump_texture(uint32_t hash, UINT width, UINT height, DXGI_FORMAT format, const void *data, UINT row_pitch);
 
     private:
@@ -107,7 +119,6 @@ namespace TextureToolkit
         // Active-scene tracking is keyed by content hash (immune to driver pointer reuse).
         std::unordered_set<uint32_t> m_current_frame_hashes;
         std::unordered_set<uint32_t> m_active_frame_hashes;
-        std::unordered_set<uint32_t> m_requested_dumps;
         std::unordered_map<uint32_t, std::filesystem::path> m_injected_files;
         std::unordered_map<uint32_t, TextureDetails> m_tracked_textures;
 
@@ -125,6 +136,12 @@ namespace TextureToolkit
         uint32_t m_preview_target_hash = 0;
         IDirect3DBaseTexture9 *m_preview_tex9 = nullptr;
         ID3D11ShaderResourceView *m_preview_srv11 = nullptr;
+
+        // Dumped-file preview, loaded on demand (see get_file_preview_handle).
+        uint32_t m_file_preview_hash = 0;
+        IDirect3DBaseTexture9 *m_file_preview_tex9 = nullptr;
+        ID3D11ShaderResourceView *m_file_preview_srv11 = nullptr;
+
         void release_preview();
 
         // Background dump worker
@@ -145,6 +162,10 @@ namespace TextureToolkit
         bool m_dump_thread_running = false;
 
         void dump_worker_loop();
+
+        // Writes a single-mip DDS to TT/dump from CPU pixel data. Returns the file path, or
+        // empty on failure. Does not touch tracked state; the caller updates status.
+        std::string write_dump_dds(uint32_t hash, UINT width, UINT height, DXGI_FORMAT format, const void *data, UINT row_pitch);
 
         std::filesystem::path find_injection_path(uint32_t hash);
     };

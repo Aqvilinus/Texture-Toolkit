@@ -94,6 +94,6 @@ namespace TextureToolkit
              << "Verbose=" << (m_config.verbose ? 1 : 0) << "\n";
 
         file.close();
-        Logger::get().info("[ConfigManager] Default configuration created at " + m_ini_path.string());
+        Logger::get().info("[ConfigManager] Configuration saved to " + m_ini_path.string());
     }
 }
