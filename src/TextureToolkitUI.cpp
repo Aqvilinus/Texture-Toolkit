@@ -202,7 +202,7 @@ namespace TextureToolkit
                 ImGui::TableSetColumnIndex(0);
                 std::string hash_str = "0x" + tex.hash_hex;
                 bool is_selected = (s_selected_texture_hash == tex.hash);
-                if (ImGui::Selectable(hash_str.c_str(), is_selected, ImGuiSelectableFlags_SpanAllColumns))
+                if (ImGui::Selectable(hash_str.c_str(), is_selected))
                 {
                     s_selected_texture_hash = tex.hash;
                 }
@@ -230,9 +230,10 @@ namespace TextureToolkit
                     ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "[ORIGINAL]");
                 }
 
-                // Column 4: Action
+                // Column 4: Action (allow item overlap so button receives click priority over row selectable)
                 ImGui::TableSetColumnIndex(4);
                 ImGui::PushID(static_cast<int>(i));
+                ImGui::SetNextItemAllowOverlap();
                 if (ImGui::Button("Dump"))
                 {
                     s_selected_texture_hash = tex.hash;
@@ -245,12 +246,41 @@ namespace TextureToolkit
         }
         ImGui::EndChild();
 
-        // Detailed Texture Inspector Panel
+        // Detailed Texture Inspector Panel with Live Preview
         if (selected_texture_ptr != nullptr)
         {
             ImGui::Spacing();
             if (ImGui::CollapsingHeader("Selected Texture Inspector", ImGuiTreeNodeFlags_DefaultOpen))
             {
+                uint64_t tex_handle = 0;
+                if (selected_texture_ptr->replacement_handle != 0)
+                {
+                    tex_handle = selected_texture_ptr->replacement_handle;
+                }
+                else if (selected_texture_ptr->format_short.rfind("D3D9_", 0) == 0)
+                {
+                    tex_handle = selected_texture_ptr->resource_handle;
+                }
+
+                if (tex_handle != 0)
+                {
+                    float aspect = (selected_texture_ptr->height > 0) ? static_cast<float>(selected_texture_ptr->width) / static_cast<float>(selected_texture_ptr->height) : 1.0f;
+                    float preview_h = 130.0f;
+                    float preview_w = preview_h * aspect;
+                    if (preview_w > 240.0f)
+                    {
+                        preview_w = 240.0f;
+                        preview_h = preview_w / aspect;
+                    }
+
+                    ImGui::BeginGroup();
+                    ImGui::Text("Live Preview:");
+                    ImGui::Image(static_cast<ImTextureID>(tex_handle), ImVec2(preview_w, preview_h), ImVec2(0, 0), ImVec2(1, 1), ImVec4(1, 1, 1, 1), ImVec4(0.4f, 0.4f, 0.4f, 1.0f));
+                    ImGui::EndGroup();
+                    ImGui::SameLine(0.0f, 20.0f);
+                }
+
+                ImGui::BeginGroup();
                 ImGui::Text("Hash: 0x%s", selected_texture_ptr->hash_hex.c_str());
                 ImGui::SameLine();
                 if (ImGui::Button("Copy Hash"))
@@ -283,6 +313,7 @@ namespace TextureToolkit
                     tm.request_dump(selected_texture_ptr->hash);
                     SetStatusMessage("Queued dump for texture 0x" + selected_texture_ptr->hash_hex);
                 }
+                ImGui::EndGroup();
             }
         }
 

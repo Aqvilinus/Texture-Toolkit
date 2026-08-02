@@ -20,6 +20,9 @@ namespace TextureToolkit
         void hook_device(ID3D11Device *device);
         void hook_dxgi_factory(IDXGIFactory *factory);
 
+        ID3D11Device *get_device() const { return m_device; }
+        ID3D11DeviceContext *get_context() const { return m_context; }
+
         // Re-entrancy guard for injection
         static thread_local bool s_inside_injection;
 

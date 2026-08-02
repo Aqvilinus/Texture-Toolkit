@@ -597,11 +597,16 @@ namespace TextureToolkit
         std::vector<TextureDetails> result;
         result.reserve(m_tracked_textures.size());
 
-        for (const auto &pair : m_tracked_textures)
+        for (auto &pair : m_tracked_textures)
         {
+            if (m_injected_files.find(pair.first) != m_injected_files.end() || pair.second.replacement_handle != 0)
+            {
+                pair.second.status = TextureStatus::INJECTED;
+            }
+
             if (show_current_frame_only)
             {
-                if (pair.second.last_seen_frame == 0 || (m_frame_count > 0 && pair.second.last_seen_frame + 5 < m_frame_count))
+                if (pair.second.last_seen_frame == 0 || (m_frame_count > 0 && pair.second.last_seen_frame + 60 < m_frame_count))
                     continue;
             }
             result.push_back(pair.second);
@@ -689,5 +694,47 @@ namespace TextureToolkit
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         m_requested_dumps.insert(hash);
+
+        auto it = m_tracked_textures.find(hash);
+        if (it == m_tracked_textures.end() || it->second.resource_handle == 0)
+            return;
+
+        // Instant DX11 Staging Texture Readback
+        ID3D11Device *device11 = D3D11Hook::get().get_device();
+        ID3D11DeviceContext *context11 = D3D11Hook::get().get_context();
+        if (device11 != nullptr && context11 != nullptr)
+        {
+            ID3D11Resource *res = reinterpret_cast<ID3D11Resource *>(it->second.resource_handle);
+            ID3D11Texture2D *tex2d = nullptr;
+            if (SUCCEEDED(res->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void **>(&tex2d))) && tex2d != nullptr)
+            {
+                D3D11_TEXTURE2D_DESC desc = {};
+                tex2d->GetDesc(&desc);
+
+                D3D11_TEXTURE2D_DESC staging_desc = desc;
+                staging_desc.Usage = D3D11_USAGE_STAGING;
+                staging_desc.BindFlags = 0;
+                staging_desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+                staging_desc.MiscFlags = 0;
+
+                ID3D11Texture2D *staging_tex = nullptr;
+                if (SUCCEEDED(device11->CreateTexture2D(&staging_desc, nullptr, &staging_tex)) && staging_tex != nullptr)
+                {
+                    context11->CopyResource(staging_tex, tex2d);
+
+                    D3D11_MAPPED_SUBRESOURCE mapped = {};
+                    if (SUCCEEDED(context11->Map(staging_tex, 0, D3D11_MAP_READ, 0, &mapped)) && mapped.pData != nullptr)
+                    {
+                        dump_texture(hash, desc.Width, desc.Height, desc.Format, mapped.pData, mapped.RowPitch);
+                        it->second.status = TextureStatus::DUMPED;
+                        m_requested_dumps.erase(hash);
+                        context11->Unmap(staging_tex, 0);
+                        Logger::get().info("[TextureManager] Instant DX11 VRAM staging dump succeeded for 0x" + format_hash_hex(hash));
+                    }
+                    staging_tex->Release();
+                }
+                tex2d->Release();
+            }
+        }
     }
 }

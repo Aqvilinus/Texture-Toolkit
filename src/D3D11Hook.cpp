@@ -20,19 +20,18 @@ namespace TextureToolkit
     {
         if (TextureToolkitUI::is_visible())
         {
+            extern bool g_inside_imgui_render;
+            g_inside_imgui_render = true;
+            ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam);
+            g_inside_imgui_render = false;
+
             if (msg == WM_INPUT)
-                return 0; // Block raw input (mouse click/move) from game
+                return 0; // Block raw input from game
 
-            if (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam))
-                return true;
-
-            // Block keyboard and mouse from reaching the game when UI is open
-            if (msg >= WM_KEYFIRST && msg <= WM_KEYLAST) 
-                return 0;
-            if (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST)
+            if ((msg >= WM_KEYFIRST && msg <= WM_KEYLAST) ||
+                (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST))
             {
-                // Let mouse movement pass through so game center-locking doesn't freak out, but block clicks
-                if (msg != WM_MOUSEMOVE) return 0;
+                return 0; // Block keyboard and mouse from reaching game when UI is open
             }
         }
 
@@ -323,6 +322,7 @@ namespace TextureToolkit
 
         if (TextureToolkitUI::is_visible())
         {
+            while (ShowCursor(TRUE) < 0);
             SetCursor(LoadCursor(nullptr, IDC_ARROW));
         }
 
@@ -330,7 +330,7 @@ namespace TextureToolkit
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
 
-        ImGui::GetIO().MouseDrawCursor = TextureToolkitUI::is_visible();
+        ImGui::GetIO().MouseDrawCursor = false; // Disable software cursor; OS hardware cursor is used
 
         TextureToolkitUI::draw_ui(nullptr);
 
@@ -339,11 +339,41 @@ namespace TextureToolkit
 
         g_inside_imgui_render = false;
 
+        // Save current DX11 Render Targets & Viewports
+        UINT num_viewports = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
+        D3D11_VIEWPORT old_viewports[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE];
+        m_context->RSGetViewports(&num_viewports, old_viewports);
+
+        ID3D11RenderTargetView *old_rtv = nullptr;
+        ID3D11DepthStencilView *old_dsv = nullptr;
+        m_context->OMGetRenderTargets(1, &old_rtv, &old_dsv);
+
         ID3D11RenderTargetView *rtv = nullptr;
         ID3D11Texture2D *back_buffer = nullptr;
-        if (SUCCEEDED(swapchain->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<void **>(&back_buffer))))
+        if (SUCCEEDED(swapchain->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<void **>(&back_buffer))) && back_buffer != nullptr)
         {
-            m_device->CreateRenderTargetView(back_buffer, nullptr, &rtv);
+            D3D11_TEXTURE2D_DESC bb_desc = {};
+            back_buffer->GetDesc(&bb_desc);
+
+            DXGI_FORMAT rtv_format = bb_desc.Format;
+            if (rtv_format == DXGI_FORMAT_R8G8B8A8_TYPELESS)
+                rtv_format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            else if (rtv_format == DXGI_FORMAT_B8G8R8A8_TYPELESS)
+                rtv_format = DXGI_FORMAT_B8G8R8A8_UNORM;
+            else if (rtv_format == DXGI_FORMAT_R10G10B10A2_TYPELESS)
+                rtv_format = DXGI_FORMAT_R10G10B10A2_UNORM;
+
+            D3D11_RENDER_TARGET_VIEW_DESC rtv_desc = {};
+            rtv_desc.Format = rtv_format;
+            rtv_desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+            rtv_desc.Texture2D.MipSlice = 0;
+
+            HRESULT hr_rtv = m_device->CreateRenderTargetView(back_buffer, &rtv_desc, &rtv);
+            if (FAILED(hr_rtv))
+            {
+                // Fallback to nullptr desc if explicit desc fails
+                m_device->CreateRenderTargetView(back_buffer, nullptr, &rtv);
+            }
             back_buffer->Release();
         }
 
@@ -352,6 +382,16 @@ namespace TextureToolkit
             m_context->OMSetRenderTargets(1, &rtv, nullptr);
             ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
             rtv->Release();
+        }
+
+        // Restore original render targets & viewports
+        m_context->OMSetRenderTargets(1, &old_rtv, old_dsv);
+        if (old_rtv != nullptr) old_rtv->Release();
+        if (old_dsv != nullptr) old_dsv->Release();
+
+        if (num_viewports > 0)
+        {
+            m_context->RSSetViewports(num_viewports, old_viewports);
         }
     }
 

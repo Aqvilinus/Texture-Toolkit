@@ -17,6 +17,8 @@ namespace TextureToolkit
         void hook_d3d9_interface(IDirect3D9 *d3d9);
         void hook_device_interface(IDirect3DDevice9 *device);
 
+        IDirect3DDevice9 *get_device() const { return m_device; }
+
         // Re-entrancy guard: set true while creating replacement textures
         // to prevent our hooks from re-entering the injection path
         static thread_local bool s_inside_injection;

@@ -19,19 +19,18 @@ namespace TextureToolkit
     {
         if (TextureToolkitUI::is_visible())
         {
+            extern bool g_inside_imgui_render;
+            g_inside_imgui_render = true;
+            ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam);
+            g_inside_imgui_render = false;
+
             if (msg == WM_INPUT)
-                return 0; // Block raw input (mouse click/move) from game
+                return 0; // Block raw input from game
 
-            if (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam))
-                return true;
-
-            // Block keyboard and mouse from reaching the game when UI is open
-            if (msg >= WM_KEYFIRST && msg <= WM_KEYLAST) 
-                return 0;
-            if (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST)
+            if ((msg >= WM_KEYFIRST && msg <= WM_KEYLAST) ||
+                (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST))
             {
-                // Let mouse movement pass through so game center-locking doesn't freak out, but block clicks
-                if (msg != WM_MOUSEMOVE) return 0;
+                return 0; // Block keyboard and mouse from reaching game when UI is open
             }
         }
 
@@ -258,6 +257,7 @@ namespace TextureToolkit
 
         if (TextureToolkitUI::is_visible())
         {
+            while (ShowCursor(TRUE) < 0);
             SetCursor(LoadCursor(nullptr, IDC_ARROW));
         }
 
@@ -265,7 +265,7 @@ namespace TextureToolkit
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
 
-        ImGui::GetIO().MouseDrawCursor = TextureToolkitUI::is_visible();
+        ImGui::GetIO().MouseDrawCursor = false; // Disable software cursor; OS hardware cursor is used
 
         TextureToolkitUI::draw_ui(nullptr);
 

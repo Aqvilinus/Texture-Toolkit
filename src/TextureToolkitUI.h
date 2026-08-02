@@ -4,6 +4,8 @@
 
 namespace TextureToolkit
 {
+    extern bool g_inside_imgui_render;
+
     class TextureToolkitUI
     {
     public:

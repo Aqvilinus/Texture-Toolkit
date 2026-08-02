@@ -12,10 +12,9 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 
 extern HMODULE g_our_module;
 
-bool g_inside_imgui_render = false;
-
 namespace TextureToolkit
 {
+    bool g_inside_imgui_render = false;
     DInput8Hook &DInput8Hook::get()
     {
         static DInput8Hook instance;
@@ -345,26 +344,14 @@ namespace TextureToolkit
         if (lpMsg->message == WM_INPUT)
             return true;
 
-        bool imgui_handled = false;
+        if ((lpMsg->message >= WM_KEYFIRST && lpMsg->message <= WM_KEYLAST) ||
+            (lpMsg->message >= WM_MOUSEFIRST && lpMsg->message <= WM_MOUSELAST))
         {
             extern bool g_inside_imgui_render;
             g_inside_imgui_render = true;
-            imgui_handled = ImGui_ImplWin32_WndProcHandler(lpMsg->hwnd, lpMsg->message, lpMsg->wParam, lpMsg->lParam);
+            ImGui_ImplWin32_WndProcHandler(lpMsg->hwnd, lpMsg->message, lpMsg->wParam, lpMsg->lParam);
             g_inside_imgui_render = false;
-        }
-
-        if (imgui_handled)
-        {
-            return true;
-        }
-
-        if (lpMsg->message >= WM_KEYFIRST && lpMsg->message <= WM_KEYLAST)
-            return true;
-
-        if (lpMsg->message >= WM_MOUSEFIRST && lpMsg->message <= WM_MOUSELAST)
-        {
-            if (lpMsg->message != WM_MOUSEMOVE)
-                return true;
+            return true; // Block input message from reaching the game
         }
 
         return false;
