@@ -28,6 +28,8 @@ namespace TextureToolkit
         Logger::get().info("[Main] Texture Toolkit Standalone v1.0.0 initializing...");
 
         ConfigManager::get().init(game_dir);
+        Logger::get().set_min_level(ConfigManager::get().get_config().verbose ? LogLevel::Debug : LogLevel::Info);
+
         TextureManager::get().init();
         HookManager::get().init();
 

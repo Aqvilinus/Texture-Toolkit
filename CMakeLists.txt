@@ -54,7 +54,6 @@ set(SOURCES
     src/TextureToolkitUI.cpp
     src/TextureHash.cpp
     src/DDSLoader.cpp
-    src/PNGLoader.cpp
     TextureToolkit.def
     ${MINHOOK_SOURCES}
     ${IMGUI_SOURCES}

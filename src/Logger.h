@@ -24,6 +24,11 @@ namespace TextureToolkit
         void init(const std::filesystem::path &log_dir);
         void log(LogLevel level, const std::string &message);
 
+        // Messages below this level are dropped. Defaults to Info so the very chatty
+        // per-texture/per-hook Debug lines don't flood the log (a real perf drain at
+        // thousands of lines/sec). Set to Debug via the INI "Verbose" toggle.
+        void set_min_level(LogLevel level) { m_min_level = level; }
+
         void debug(const std::string &msg) { log(LogLevel::Debug, msg); }
         void info(const std::string &msg) { log(LogLevel::Info, msg); }
         void warn(const std::string &msg) { log(LogLevel::Warning, msg); }
@@ -36,6 +41,7 @@ namespace TextureToolkit
         std::mutex m_mutex;
         std::ofstream m_file;
         bool m_initialized = false;
+        LogLevel m_min_level = LogLevel::Info;
 
         std::string get_timestamp();
     };

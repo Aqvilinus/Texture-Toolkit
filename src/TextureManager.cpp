@@ -3,7 +3,6 @@
 #include "D3D9Hook.h"
 #include "D3D11Hook.h"
 #include "DDSLoader.h"
-#include "PNGLoader.h"
 #include "Logger.h"
 #include <windows.h>
 #include <sstream>
@@ -12,6 +11,132 @@
 
 namespace TextureToolkit
 {
+    // Private-data GUID used to tag every original game resource with its content
+    // hash. The driver clears private data when the object is destroyed, so a reused
+    // pointer belonging to a new resource never carries a stale hash -- this is what
+    // makes replacement lookups immune to driver pointer reuse.
+    // {6B7A4C10-3F2E-4D9A-9E21-8C0A5B1D2E34}
+    static const GUID TT_HASH_GUID =
+        { 0x6b7a4c10, 0x3f2e, 0x4d9a, { 0x9e, 0x21, 0x8c, 0x0a, 0x5b, 0x1d, 0x2e, 0x34 } };
+
+    static bool is_block_compressed(reshade::api::format format);
+
+    // Bytes per pixel for the uncompressed formats we can box-downsample. 0 = not supported.
+    static uint32_t uncompressed_bpp(reshade::api::format f)
+    {
+        switch (f)
+        {
+        case reshade::api::format::r8g8b8a8_unorm:
+        case reshade::api::format::r8g8b8a8_unorm_srgb:
+        case reshade::api::format::b8g8r8a8_unorm:
+        case reshade::api::format::b8g8r8a8_unorm_srgb:
+        case reshade::api::format::b8g8r8x8_unorm:
+        case reshade::api::format::b8g8r8x8_unorm_srgb:
+            return 4;
+        case reshade::api::format::r8g8_unorm: return 2;
+        case reshade::api::format::r8_unorm:
+        case reshade::api::format::a8_unorm:  return 1;
+        default: return 0;
+        }
+    }
+
+    // Number of mip levels in a full chain down to 1x1 for the given dimensions.
+    static uint32_t full_mip_count(uint32_t w, uint32_t h)
+    {
+        uint32_t levels = 1;
+        while (w > 1 || h > 1)
+        {
+            w = (std::max)(1u, w / 2);
+            h = (std::max)(1u, h / 2);
+            ++levels;
+        }
+        return levels;
+    }
+
+    // 2x2 box-filter downsample of a tightly-addressed uncompressed image.
+    static std::vector<uint8_t> downsample_2x(const uint8_t *src, uint32_t src_w, uint32_t src_h, uint32_t src_pitch, uint32_t bpp)
+    {
+        uint32_t dw = (std::max)(1u, src_w / 2);
+        uint32_t dh = (std::max)(1u, src_h / 2);
+        std::vector<uint8_t> dst(static_cast<size_t>(dw) * dh * bpp);
+
+        for (uint32_t y = 0; y < dh; ++y)
+        {
+            uint32_t sy0 = y * 2;
+            uint32_t sy1 = (std::min)(sy0 + 1, src_h - 1);
+            const uint8_t *r0 = src + static_cast<size_t>(sy0) * src_pitch;
+            const uint8_t *r1 = src + static_cast<size_t>(sy1) * src_pitch;
+            uint8_t *drow = dst.data() + static_cast<size_t>(y) * dw * bpp;
+
+            for (uint32_t x = 0; x < dw; ++x)
+            {
+                uint32_t sx0 = (x * 2) * bpp;
+                uint32_t sx1 = ((std::min)(x * 2 + 1, src_w - 1)) * bpp;
+                for (uint32_t c = 0; c < bpp; ++c)
+                {
+                    uint32_t sum = r0[sx0 + c] + r0[sx1 + c] + r1[sx0 + c] + r1[sx1 + c];
+                    drow[x * bpp + c] = static_cast<uint8_t>((sum + 2) / 4);
+                }
+            }
+        }
+        return dst;
+    }
+
+    // One resolved mip level ready to upload: 'ptr' points either into the DDS payload
+    // (for levels the file supplies) or into 'data' (for auto-generated levels).
+    struct MipLevel
+    {
+        std::vector<uint8_t> data;
+        const uint8_t *ptr = nullptr;
+        uint32_t width = 0;
+        uint32_t height = 0;
+        uint32_t row_pitch = 0;
+        uint32_t slice_pitch = 0;
+    };
+
+    // Resolve levels [0, target_levels) for a replacement of dds.width x dds.height.
+    // Uses DDS subresources where present; auto-generates the rest for uncompressed
+    // formats. For compressed formats missing a level, the chain stops early (a shorter
+    // but fully-valid chain) rather than leaving an uninitialised level.
+    static std::vector<MipLevel> build_replacement_mips(const DDSImage &dds, uint32_t target_levels)
+    {
+        std::vector<MipLevel> levels;
+        const uint32_t bpp = uncompressed_bpp(dds.format);
+        const bool compressed = is_block_compressed(dds.format);
+
+        uint32_t w = dds.width, h = dds.height;
+        for (uint32_t i = 0; i < target_levels; ++i)
+        {
+            MipLevel lvl;
+            lvl.width = w;
+            lvl.height = h;
+
+            if (i < dds.subresources.size())
+            {
+                lvl.ptr = dds.subresources[i].data();
+                lvl.row_pitch = dds.row_pitches[i];
+                lvl.slice_pitch = dds.slice_pitches[i];
+            }
+            else
+            {
+                // Auto-generate this level by downsampling the previous one.
+                if (compressed || bpp == 0 || levels.empty())
+                    break; // Cannot synthesise; keep the shorter valid chain.
+
+                const MipLevel &prev = levels.back();
+                lvl.data = downsample_2x(prev.ptr, prev.width, prev.height, prev.row_pitch, bpp);
+                lvl.ptr = lvl.data.data();
+                lvl.row_pitch = w * bpp;
+                lvl.slice_pitch = static_cast<uint32_t>(lvl.data.size());
+            }
+
+            levels.push_back(std::move(lvl));
+            w = (std::max)(1u, w / 2);
+            h = (std::max)(1u, h / 2);
+        }
+        return levels;
+    }
+
     static uint32_t calculate_d3d9_pixel_hash(const void *pixel_data, UINT width, UINT height, D3DFORMAT format, UINT pitch)
     {
         if (pixel_data == nullptr || width == 0 || height == 0)
@@ -116,6 +241,28 @@ namespace TextureToolkit
         {
             m_dump_thread.join();
         }
+
+        std::lock_guard<std::mutex> lock(m_mutex);
+        release_replacements();
+    }
+
+    // Releases the COM reference we hold for every stored replacement. Caller MUST
+    // already hold m_mutex (the mutex is non-recursive).
+    void TextureManager::release_replacements()
+    {
+        for (auto &p : m_d3d9_replacements)
+        {
+            if (p.second != nullptr)
+                p.second->Release();
+        }
+        m_d3d9_replacements.clear();
+
+        for (auto &p : m_d3d11_replacements)
+        {
+            if (p.second != nullptr)
+                p.second->Release();
+        }
+        m_d3d11_replacements.clear();
     }
 
     void TextureManager::on_frame()
@@ -123,29 +270,22 @@ namespace TextureToolkit
         std::lock_guard<std::mutex> lock(m_mutex);
         m_frame_count++;
 
-        m_active_frame_resources = m_current_frame_resources;
-        m_current_frame_resources.clear();
+        m_active_frame_hashes = m_current_frame_hashes;
+        m_current_frame_hashes.clear();
 
-        for (uint64_t res_handle : m_active_frame_resources)
+        for (uint32_t hash : m_active_frame_hashes)
         {
-            auto it = m_resource_to_hash.find(res_handle);
-            if (it != m_resource_to_hash.end())
-            {
-                uint32_t hash = it->second;
-                if (m_tracked_textures.find(hash) != m_tracked_textures.end())
-                {
-                    m_tracked_textures[hash].last_seen_frame = m_frame_count;
-                }
-            }
+            auto it = m_tracked_textures.find(hash);
+            if (it != m_tracked_textures.end())
+                it->second.last_seen_frame = m_frame_count;
         }
     }
 
     void TextureManager::rescan_injected()
     {
         std::lock_guard<std::mutex> lock(m_mutex);
+        release_replacements();
         m_injected_files.clear();
-        m_d3d9_replacements.clear();
-        m_d3d11_replacements.clear();
 
         if (!std::filesystem::exists(m_inject_dir))
             return;
@@ -158,7 +298,8 @@ namespace TextureToolkit
             std::string ext = entry.path().extension().string();
             std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
 
-            if (ext != ".dds" && ext != ".png")
+            // DDS-only injection for maximum format/compatibility safety.
+            if (ext != ".dds")
                 continue;
 
             std::string stem = entry.path().stem().string();
@@ -168,11 +309,7 @@ namespace TextureToolkit
             try
             {
                 uint32_t hash = static_cast<uint32_t>(std::stoul(stem, nullptr, 16));
-                
-                if (ext == ".dds" || m_injected_files.find(hash) == m_injected_files.end())
-                {
-                    m_injected_files[hash] = entry.path();
-                }
+                m_injected_files[hash] = entry.path();
             }
             catch (...)
             {
@@ -180,7 +317,7 @@ namespace TextureToolkit
             }
         }
 
-        Logger::get().info("[TextureManager] Scanned " + std::to_string(m_injected_files.size()) + " replacement texture file(s) in TT/inject.");
+        Logger::get().info("[TextureManager] Scanned " + std::to_string(m_injected_files.size()) + " DDS replacement file(s) in TT/inject.");
     }
 
     std::filesystem::path TextureManager::find_injection_path(uint32_t hash)
@@ -195,19 +332,25 @@ namespace TextureToolkit
 
     IDirect3DBaseTexture9 *TextureManager::get_replacement_texture9(IDirect3DBaseTexture9 *orig)
     {
-        if (!enable_injection || orig == nullptr)
+        if (orig == nullptr)
+            return orig;
+
+        // Resolve the texture's content hash from its private-data tag. Untracked
+        // textures carry no tag, so this fails fast for the common case.
+        uint32_t hash = 0;
+        DWORD size = sizeof(hash);
+        if (FAILED(orig->GetPrivateData(TT_HASH_GUID, &hash, &size)) || size != sizeof(hash))
             return orig;
 
         std::lock_guard<std::mutex> lock(m_mutex);
-        uint64_t handle = reinterpret_cast<uint64_t>(orig);
+        m_current_frame_hashes.insert(hash);
 
-        m_current_frame_resources.insert(handle);
+        if (!enable_injection)
+            return orig;
 
-        auto it = m_d3d9_replacements.find(handle);
-        if (it != m_d3d9_replacements.end() && it->second != 0)
-        {
-            return reinterpret_cast<IDirect3DBaseTexture9 *>(it->second);
-        }
+        auto it = m_d3d9_replacements.find(hash);
+        if (it != m_d3d9_replacements.end() && it->second != nullptr)
+            return it->second;
 
         return orig;
     }
@@ -309,9 +452,15 @@ namespace TextureToolkit
         if (hash == 0)
             return;
 
+        UINT original_levels = texture->GetLevelCount();
+
         std::lock_guard<std::mutex> lock(m_mutex);
         uint64_t handle = reinterpret_cast<uint64_t>(texture);
-        m_resource_to_hash[handle] = hash;
+
+        // Tag the original resource with its content hash. Used both for active-scene
+        // tracking and for resolving replacements at bind time (SetTexture), and is
+        // immune to driver pointer reuse.
+        texture->SetPrivateData(TT_HASH_GUID, &hash, sizeof(hash), 0);
 
         TextureDetails details;
         details.hash = hash;
@@ -319,6 +468,7 @@ namespace TextureToolkit
         details.hash_hex_0x = format_hash_hex_0x(hash);
         details.width = width;
         details.height = height;
+        details.mip_levels = original_levels;
         details.format_id = static_cast<uint32_t>(format);
         details.format_str = "D3DFORMAT_" + d3d9_format_to_string(format);
         details.format_short = "D3D9_" + d3d9_format_to_string(format);
@@ -326,58 +476,64 @@ namespace TextureToolkit
         details.last_seen_frame = m_frame_count;
 
         std::filesystem::path inject_path = find_injection_path(hash);
-        if (enable_injection && !inject_path.empty())
+        if (enable_injection && !inject_path.empty() &&
+            m_d3d9_replacements.find(hash) == m_d3d9_replacements.end())
         {
-            std::string ext = inject_path.extension().string();
-            std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-
-            if (ext == ".dds")
+            DDSImage dds;
+            if (load_dds(inject_path.string(), dds) && !dds.subresources.empty())
             {
-                DDSImage dds;
-                if (load_dds(inject_path.string(), dds) && !dds.subresources.empty())
+                D3DFORMAT d3d9_target_fmt = dxgi_to_d3d9_format(dds.format);
+                if (d3d9_target_fmt != D3DFMT_UNKNOWN)
                 {
-                    D3DFORMAT d3d9_target_fmt = dxgi_to_d3d9_format(dds.format);
-                    if (d3d9_target_fmt != D3DFMT_UNKNOWN)
+                    // Match the original's mip topology: single level stays single,
+                    // a mipmapped original gets a full chain (auto-generated as needed).
+                    uint32_t target_levels = (original_levels <= 1) ? 1u : full_mip_count(dds.width, dds.height);
+                    std::vector<MipLevel> mips = build_replacement_mips(dds, target_levels);
+
+                    if (mips.empty())
                     {
+                        Logger::get().error("[TextureManager] Injected DDS 0x" + format_hash_hex(hash) + " produced no usable mip levels.");
+                    }
+                    else
+                    {
+                        if (original_levels > 1 && mips.size() < target_levels)
+                        {
+                            Logger::get().error("[TextureManager] Injected DDS 0x" + format_hash_hex(hash) + " is missing mip levels (" + std::to_string(mips.size()) + "/" + std::to_string(target_levels) + "). Compressed replacements must ship a full mip chain; re-export with mipmaps to avoid shimmering at distance.");
+                        }
+
                         IDirect3DTexture9 *highres_tex = nullptr;
                         D3D9Hook::s_inside_injection = true;
                         HRESULT hr = device->CreateTexture(
-                            dds.width,
-                            dds.height,
-                            static_cast<UINT>(dds.mip_levels),
-                            0,
-                            d3d9_target_fmt,
-                            D3DPOOL_MANAGED,
-                            &highres_tex,
-                            nullptr
-                        );
+                            dds.width, dds.height, static_cast<UINT>(mips.size()), 0,
+                            d3d9_target_fmt, D3DPOOL_MANAGED, &highres_tex, nullptr);
+
+                        bool needs_swizzle = (dds.format == reshade::api::format::r8g8b8a8_unorm || dds.format == reshade::api::format::r8g8b8a8_unorm_srgb);
+                        UINT block_height = is_block_compressed(dds.format) ? 4 : 1;
 
                         if (SUCCEEDED(hr) && highres_tex != nullptr)
                         {
-                            D3DLOCKED_RECT rect = {};
-                            if (SUCCEEDED(highres_tex->LockRect(0, &rect, nullptr, 0)))
+                            bool upload_ok = true;
+                            for (size_t lvl = 0; lvl < mips.size(); ++lvl)
                             {
-                                UINT block_height = 1;
-                                if (is_block_compressed(dds.format))
+                                D3DLOCKED_RECT rect = {};
+                                if (FAILED(highres_tex->LockRect(static_cast<UINT>(lvl), &rect, nullptr, 0)))
                                 {
-                                    block_height = 4;
+                                    upload_ok = false;
+                                    break;
                                 }
 
-                                UINT num_rows = (dds.height + (block_height - 1)) / block_height;
-                                UINT dds_row_pitch = dds.row_pitches[0];
-                                UINT copy_row_pitch = (std::min)(static_cast<UINT>(rect.Pitch), dds_row_pitch);
+                                const MipLevel &m = mips[lvl];
+                                UINT num_rows = (m.height + (block_height - 1)) / block_height;
+                                UINT copy_row_pitch = (std::min)(static_cast<UINT>(rect.Pitch), m.row_pitch);
+                                uint8_t *dest_ptr = static_cast<uint8_t *>(rect.pBits);
 
-                                const uint8_t* src_ptr = dds.subresources[0].data();
-                                uint8_t* dest_ptr = static_cast<uint8_t*>(rect.pBits);
-
-                                bool needs_swizzle = (dds.format == reshade::api::format::r8g8b8a8_unorm || dds.format == reshade::api::format::r8g8b8a8_unorm_srgb);
                                 if (needs_swizzle)
                                 {
                                     for (UINT y = 0; y < num_rows; ++y)
                                     {
-                                        const uint8_t* src_row = src_ptr + y * dds_row_pitch;
-                                        uint8_t* dest_row = dest_ptr + y * rect.Pitch;
-                                        for (UINT x = 0; x < dds.width; ++x)
+                                        const uint8_t *src_row = m.ptr + y * m.row_pitch;
+                                        uint8_t *dest_row = dest_ptr + y * rect.Pitch;
+                                        for (UINT x = 0; x < m.width; ++x)
                                         {
                                             uint8_t r = src_row[x * 4 + 0];
                                             uint8_t g = src_row[x * 4 + 1];
@@ -393,50 +549,51 @@ namespace TextureToolkit
                                 else
                                 {
                                     for (UINT y = 0; y < num_rows; ++y)
-                                    {
-                                        std::memcpy(dest_ptr + y * rect.Pitch, src_ptr + y * dds_row_pitch, copy_row_pitch);
-                                    }
+                                        std::memcpy(dest_ptr + y * rect.Pitch, m.ptr + y * m.row_pitch, copy_row_pitch);
                                 }
 
-                                highres_tex->UnlockRect(0);
+                                highres_tex->UnlockRect(static_cast<UINT>(lvl));
+                            }
 
-                                uint64_t highres_handle = reinterpret_cast<uint64_t>(highres_tex);
-                                m_d3d9_replacements[handle] = highres_handle;
+                            if (upload_ok)
+                            {
+                                // Keep our reference (released in release_replacements).
+                                m_d3d9_replacements[hash] = highres_tex;
 
                                 details.status = TextureStatus::INJECTED;
                                 details.filepath_injected = inject_path.string();
-                                details.replacement_handle = highres_handle;
+                                details.replacement_handle = reinterpret_cast<uint64_t>(highres_tex);
                                 details.width = dds.width;
                                 details.height = dds.height;
 
-                                std::string msg = "[TextureManager] Successfully loaded high-res DX9 replacement for 0x" + format_hash_hex(hash) + " (" + std::to_string(dds.width) + "x" + std::to_string(dds.height) + ")";
-                                Logger::get().info(msg);
+                                Logger::get().info("[TextureManager] Loaded high-res DX9 replacement for 0x" + format_hash_hex(hash) + " (" + std::to_string(dds.width) + "x" + std::to_string(dds.height) + ", " + std::to_string(mips.size()) + " mips, original had " + std::to_string(original_levels) + ")");
                             }
                             else
                             {
                                 highres_tex->Release();
+                                Logger::get().error("[TextureManager] Failed to upload mip data for DX9 replacement 0x" + format_hash_hex(hash));
                             }
                         }
                         else
                         {
                             Logger::get().error("[TextureManager] Failed to create high-res replacement D3D9 texture for 0x" + format_hash_hex(hash));
                         }
+                        D3D9Hook::s_inside_injection = false;
                     }
-                    else
-                    {
-                        Logger::get().error("[TextureManager] Unsupported DX9 format mapping for injected texture " + inject_path.string() + ", format ID: " + std::to_string(static_cast<uint32_t>(dds.format)));
-                    }
-                    D3D9Hook::s_inside_injection = false;
                 }
                 else
                 {
-                    Logger::get().error("[TextureManager] Failed to load injected DDS file " + inject_path.string());
+                    Logger::get().error("[TextureManager] Unsupported DX9 format mapping for injected texture " + inject_path.string() + ", format ID: " + std::to_string(static_cast<uint32_t>(dds.format)));
                 }
+            }
+            else
+            {
+                Logger::get().error("[TextureManager] Failed to load injected DDS file " + inject_path.string());
             }
         }
 
         m_tracked_textures[hash] = details;
-        Logger::get().info("[TextureManager] Tracked D3D9 texture: 0x" + details.hash_hex + " (" + std::to_string(width) + "x" + std::to_string(height) + ")");
+        Logger::get().debug("[TextureManager] Tracked D3D9 texture: 0x" + details.hash_hex + " (" + std::to_string(width) + "x" + std::to_string(height) + ")");
 
         bool should_dump = auto_dump || (m_requested_dumps.find(hash) != m_requested_dumps.end());
         if (should_dump)
@@ -453,7 +610,7 @@ namespace TextureToolkit
 
     ID3D11ShaderResourceView *TextureManager::get_replacement_srv11(ID3D11ShaderResourceView *orig)
     {
-        if (!enable_injection || orig == nullptr)
+        if (orig == nullptr)
             return orig;
 
         ID3D11Resource *orig_res = nullptr;
@@ -461,20 +618,25 @@ namespace TextureToolkit
         if (orig_res == nullptr)
             return orig;
 
-        std::lock_guard<std::mutex> lock(m_mutex);
-        uint64_t res_handle = reinterpret_cast<uint64_t>(orig_res);
-
-        m_current_frame_resources.insert(res_handle);
-
-        ID3D11ShaderResourceView *replacement = orig;
-        auto it = m_d3d11_replacements.find(res_handle);
-        if (it != m_d3d11_replacements.end() && it->second != 0)
-        {
-            replacement = reinterpret_cast<ID3D11ShaderResourceView *>(it->second);
-        }
-
+        // Resolve the content hash from the resource's private-data tag.
+        uint32_t hash = 0;
+        UINT size = sizeof(hash);
+        HRESULT hr = orig_res->GetPrivateData(TT_HASH_GUID, &size, &hash);
         orig_res->Release();
-        return replacement;
+        if (FAILED(hr) || size != sizeof(hash))
+            return orig;
+
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_current_frame_hashes.insert(hash);
+
+        if (!enable_injection)
+            return orig;
+
+        auto it = m_d3d11_replacements.find(hash);
+        if (it != m_d3d11_replacements.end() && it->second != nullptr)
+            return it->second;
+
+        return orig;
     }
 
     void TextureManager::register_unmap_texture11(ID3D11Device *device, ID3D11Resource *resource, const void *pixel_data, UINT width, UINT height, DXGI_FORMAT format, UINT pitch)
@@ -494,9 +656,24 @@ namespace TextureToolkit
         if (hash == 0)
             return;
 
+        // Original mip count drives the replacement's mip topology.
+        UINT original_levels = 1;
+        {
+            ID3D11Texture2D *orig_tex = nullptr;
+            if (SUCCEEDED(resource->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void **>(&orig_tex))) && orig_tex != nullptr)
+            {
+                D3D11_TEXTURE2D_DESC od = {};
+                orig_tex->GetDesc(&od);
+                original_levels = od.MipLevels; // 0 = full chain generated by the runtime
+                orig_tex->Release();
+            }
+        }
+
         std::lock_guard<std::mutex> lock(m_mutex);
         uint64_t handle = reinterpret_cast<uint64_t>(resource);
-        m_resource_to_hash[handle] = hash;
+
+        // Tag the original resource with its content hash (see get_replacement_srv11).
+        resource->SetPrivateData(TT_HASH_GUID, sizeof(hash), &hash);
 
         TextureDetails details;
         details.hash = hash;
@@ -504,6 +681,7 @@ namespace TextureToolkit
         details.hash_hex_0x = format_hash_hex_0x(hash);
         details.width = width;
         details.height = height;
+        details.mip_levels = (original_levels == 0) ? full_mip_count(width, height) : original_levels;
         details.format_id = static_cast<uint32_t>(format);
         details.format_str = "DXGI_FORMAT_" + std::to_string(static_cast<uint32_t>(format));
         details.format_short = "DX11_" + std::to_string(static_cast<uint32_t>(format));
@@ -511,20 +689,32 @@ namespace TextureToolkit
         details.last_seen_frame = m_frame_count;
 
         std::filesystem::path inject_path = find_injection_path(hash);
-        if (enable_injection && !inject_path.empty())
+        if (enable_injection && !inject_path.empty() &&
+            m_d3d11_replacements.find(hash) == m_d3d11_replacements.end())
         {
-            std::string ext = inject_path.extension().string();
-            std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-
-            if (ext == ".dds")
+            DDSImage dds;
+            if (load_dds(inject_path.string(), dds) && !dds.subresources.empty())
             {
-                DDSImage dds;
-                if (load_dds(inject_path.string(), dds) && !dds.subresources.empty())
+                // Single-level originals stay single-level; mipmapped originals
+                // (or runtime-generated full chains, MipLevels == 0) get a full chain.
+                uint32_t target_levels = (original_levels == 1) ? 1u : full_mip_count(dds.width, dds.height);
+                std::vector<MipLevel> mips = build_replacement_mips(dds, target_levels);
+
+                if (mips.empty())
                 {
+                    Logger::get().error("[TextureManager] Injected DDS 0x" + format_hash_hex(hash) + " produced no usable mip levels.");
+                }
+                else
+                {
+                    if (original_levels != 1 && mips.size() < target_levels)
+                    {
+                        Logger::get().error("[TextureManager] Injected DDS 0x" + format_hash_hex(hash) + " is missing mip levels (" + std::to_string(mips.size()) + "/" + std::to_string(target_levels) + "). Compressed replacements must ship a full mip chain; re-export with mipmaps to avoid shimmering at distance.");
+                    }
+
                     D3D11_TEXTURE2D_DESC desc = {};
                     desc.Width = dds.width;
                     desc.Height = dds.height;
-                    desc.MipLevels = static_cast<UINT>(dds.mip_levels);
+                    desc.MipLevels = static_cast<UINT>(mips.size());
                     desc.ArraySize = 1;
                     desc.Format = static_cast<DXGI_FORMAT>(dds.format);
                     desc.SampleDesc.Count = 1;
@@ -534,12 +724,12 @@ namespace TextureToolkit
                     desc.CPUAccessFlags = 0;
                     desc.MiscFlags = 0;
 
-                    std::vector<D3D11_SUBRESOURCE_DATA> subres_data(dds.subresources.size());
-                    for (size_t i = 0; i < dds.subresources.size(); ++i)
+                    std::vector<D3D11_SUBRESOURCE_DATA> subres_data(mips.size());
+                    for (size_t i = 0; i < mips.size(); ++i)
                     {
-                        subres_data[i].pSysMem = dds.subresources[i].data();
-                        subres_data[i].SysMemPitch = dds.row_pitches[i];
-                        subres_data[i].SysMemSlicePitch = dds.slice_pitches[i];
+                        subres_data[i].pSysMem = mips[i].ptr;
+                        subres_data[i].SysMemPitch = mips[i].row_pitch;
+                        subres_data[i].SysMemSlicePitch = mips[i].slice_pitch;
                     }
 
                     ID3D11Texture2D *highres_tex = nullptr;
@@ -555,11 +745,12 @@ namespace TextureToolkit
                         srv_desc.Texture2D.MipLevels = desc.MipLevels;
 
                         hr = device->CreateShaderResourceView(highres_tex, &srv_desc, &highres_srv);
-                        highres_tex->Release(); // SRV holds reference
+                        highres_tex->Release(); // SRV holds the texture reference
 
                         if (SUCCEEDED(hr) && highres_srv != nullptr)
                         {
-                            m_d3d11_replacements[handle] = reinterpret_cast<uint64_t>(highres_srv);
+                            // Keep our reference (released in release_replacements).
+                            m_d3d11_replacements[hash] = highres_srv;
 
                             details.status = TextureStatus::INJECTED;
                             details.filepath_injected = inject_path.string();
@@ -567,16 +758,19 @@ namespace TextureToolkit
                             details.width = dds.width;
                             details.height = dds.height;
 
-                            std::string msg = "[TextureManager] Successfully loaded DX11 replacement for resource 0x" + format_hash_hex(hash) + " (" + std::to_string(dds.width) + "x" + std::to_string(dds.height) + ")";
-                            Logger::get().info(msg);
+                            Logger::get().info("[TextureManager] Loaded DX11 replacement for 0x" + format_hash_hex(hash) + " (" + std::to_string(dds.width) + "x" + std::to_string(dds.height) + ", " + std::to_string(mips.size()) + " mips, original had " + std::to_string(original_levels) + ")");
                         }
                     }
                     else
                     {
-                        Logger::get().error("[TextureManager] Failed to create DX11 replacement texture for resource 0x" + format_hash_hex(hash) + ", HRESULT: " + std::to_string(hr));
+                        Logger::get().error("[TextureManager] Failed to create DX11 replacement texture for 0x" + format_hash_hex(hash) + ", HRESULT: " + std::to_string(hr));
                     }
                     D3D11Hook::s_inside_injection = false;
                 }
+            }
+            else
+            {
+                Logger::get().error("[TextureManager] Failed to load injected DDS file " + inject_path.string());
             }
         }
 
@@ -674,7 +868,7 @@ namespace TextureToolkit
 
             if (save_dds(dds_path.string(), desc, subres))
             {
-                Logger::get().info("[TextureManager] Dumped texture hash 0x" + hex_str + " (" + std::to_string(req.width) + "x" + std::to_string(req.height) + ") asynchronously to TT/dump");
+                Logger::get().debug("[TextureManager] Dumped texture hash 0x" + hex_str + " (" + std::to_string(req.width) + "x" + std::to_string(req.height) + ") asynchronously to TT/dump");
                 
                 std::lock_guard<std::mutex> lock(m_mutex);
                 if (m_tracked_textures.find(req.hash) != m_tracked_textures.end())

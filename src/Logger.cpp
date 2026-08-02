@@ -57,6 +57,9 @@ namespace TextureToolkit
 
     void Logger::log(LogLevel level, const std::string &message)
     {
+        if (level < m_min_level)
+            return;
+
         std::lock_guard<std::mutex> lock(m_mutex);
 
         const char *level_str = "INFO";

@@ -31,6 +31,38 @@ namespace TextureToolkit
         ShellExecuteW(nullptr, L"open", dir_path.c_str(), nullptr, nullptr, SW_SHOW);
     }
 
+    void TextureToolkitUI::feed_overlay_mouse(HWND hwnd)
+    {
+        ImGuiIO &io = ImGui::GetIO();
+
+        // Software cursor: the OS hardware cursor is unreliable in fullscreen (the game
+        // hides it, e.g. NFS/DX11), so hide it and let ImGui draw the pointer instead.
+        io.MouseDrawCursor = true;
+
+        // Pin the OS cursor-display counter at exactly -1 (hidden). A plain
+        // ShowCursor(FALSE) every frame would drive the counter unbounded-negative,
+        // making it impossible for the game to re-show its cursor afterwards.
+        int cursor_count = ShowCursor(FALSE);
+        while (cursor_count >= 0)
+            cursor_count = ShowCursor(FALSE);
+        while (cursor_count < -1)
+            cursor_count = ShowCursor(TRUE);
+
+        // Poll the OS for cursor position and button state. Callers invoke this inside
+        // the g_inside_imgui_render window, so the hooked GetAsyncKeyState passes through
+        // to the real state instead of being masked. This is what makes clicks register
+        // under exclusive-DirectInput games that post no window button messages.
+        POINT p = {};
+        if (GetCursorPos(&p) && hwnd != nullptr && ScreenToClient(hwnd, &p))
+        {
+            io.AddMousePosEvent(static_cast<float>(p.x), static_cast<float>(p.y));
+        }
+
+        io.AddMouseButtonEvent(0, (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0);
+        io.AddMouseButtonEvent(1, (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0);
+        io.AddMouseButtonEvent(2, (GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0);
+    }
+
     void TextureToolkitUI::draw_ui(void *runtime)
     {
         // 1. Draw Sleek SpecialK-style OSD Notification Banner
@@ -89,22 +121,7 @@ namespace TextureToolkit
 
             ImGui::Checkbox("Show Only Active Scene Textures", &tm.show_current_frame_only);
 
-            // Format combos
-            const char* dump_formats[] = { "DDS Only (Recommended)", "PNG Only", "Both DDS + PNG" };
-            int current_dump_fmt = static_cast<int>(tm.dump_format_mode);
-            if (ImGui::Combo("Dump Format", &current_dump_fmt, dump_formats, IM_ARRAYSIZE(dump_formats)))
-            {
-                tm.dump_format_mode = static_cast<DumpFormatMode>(current_dump_fmt);
-            }
-
-            ImGui::SameLine();
-
-            const char* load_formats[] = { "DDS + PNG (Prioritize DDS)", "DDS Only", "PNG Only" };
-            int current_load_fmt = static_cast<int>(tm.load_format_mode);
-            if (ImGui::Combo("Load Format", &current_load_fmt, load_formats, IM_ARRAYSIZE(load_formats)))
-            {
-                tm.load_format_mode = static_cast<LoadFormatMode>(current_load_fmt);
-            }
+            ImGui::TextDisabled("Pipeline: DDS-only injection and DDS export (BC1-BC7 + uncompressed).");
 
             if (ImGui::Button("Hot-Reload Textures"))
             {

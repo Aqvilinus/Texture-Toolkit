@@ -303,15 +303,7 @@ namespace TextureToolkit
             TextureToolkitUI::toggle_visibility();
             bool visible = TextureToolkitUI::is_visible();
             Logger::get().info("[UI] Direct hotkey poll triggered UI toggle. Visibility = " + std::to_string(visible));
-            
-            static bool s_cursor_visible = false;
-            if (visible && !s_cursor_visible) {
-                while (ShowCursor(TRUE) < 0);
-                s_cursor_visible = true;
-            } else if (!visible && s_cursor_visible) {
-                while (ShowCursor(FALSE) >= 0);
-                s_cursor_visible = false;
-            }
+            // Cursor visibility is handled per-frame by feed_overlay_mouse (software cursor).
         }
         s_key_was_down = key_is_down;
 
@@ -320,17 +312,19 @@ namespace TextureToolkit
         extern bool g_inside_imgui_render;
         g_inside_imgui_render = true;
 
+        ImGuiIO &io = ImGui::GetIO();
         if (TextureToolkitUI::is_visible())
         {
-            while (ShowCursor(TRUE) < 0);
-            SetCursor(LoadCursor(nullptr, IDC_ARROW));
+            TextureToolkitUI::feed_overlay_mouse(m_hwnd);
+        }
+        else
+        {
+            io.MouseDrawCursor = false;
         }
 
         ImGui_ImplDX11_NewFrame();
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
-
-        ImGui::GetIO().MouseDrawCursor = false; // Disable software cursor; OS hardware cursor is used
 
         TextureToolkitUI::draw_ui(nullptr);
 

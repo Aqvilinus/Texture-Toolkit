@@ -59,6 +59,9 @@ namespace TextureToolkit
         // OSD
         m_config.show_osd_banner = GetPrivateProfileIntW(L"TextureToolkit", L"ShowOSDBanner", 1, ini_w) != 0;
 
+        // Diagnostics
+        m_config.verbose = GetPrivateProfileIntW(L"TextureToolkit", L"Verbose", 0, ini_w) != 0;
+
         Logger::get().info("[ConfigManager] Configuration loaded from " + m_ini_path.string());
     }
 
@@ -86,7 +89,9 @@ namespace TextureToolkit
              << "FilterSmallTextures=" << (m_config.filter_small_textures ? 1 : 0) << "\n"
              << "ShowCurrentFrameOnly=" << (m_config.show_current_frame_only ? 1 : 0) << "\n\n"
              << "; On-Screen Display (OSD)\n"
-             << "ShowOSDBanner=" << (m_config.show_osd_banner ? 1 : 0) << "\n";
+             << "ShowOSDBanner=" << (m_config.show_osd_banner ? 1 : 0) << "\n\n"
+             << "; Diagnostics: 1 = verbose per-texture debug logging (slow)\n"
+             << "Verbose=" << (m_config.verbose ? 1 : 0) << "\n";
 
         file.close();
         Logger::get().info("[ConfigManager] Default configuration created at " + m_ini_path.string());

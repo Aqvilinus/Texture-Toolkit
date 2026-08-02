@@ -13,20 +13,6 @@
 
 namespace TextureToolkit
 {
-    enum class DumpFormatMode
-    {
-        DDS_ONLY = 0,
-        PNG_ONLY = 1,
-        BOTH_DDS_PNG = 2
-    };
-
-    enum class LoadFormatMode
-    {
-        DDS_AND_PNG_PRIORITIZE_DDS = 0,
-        DDS_ONLY = 1,
-        PNG_ONLY = 2
-    };
-
     enum class TextureStatus
     {
         ORIGINAL = 0,
@@ -75,8 +61,6 @@ namespace TextureToolkit
         std::filesystem::path get_inject_dir() const { return m_inject_dir; }
 
         // Settings
-        DumpFormatMode dump_format_mode = DumpFormatMode::DDS_ONLY;
-        LoadFormatMode load_format_mode = LoadFormatMode::DDS_AND_PNG_PRIORITIZE_DDS;
         bool auto_dump = false;
         bool enable_injection = true;
         bool filter_small_textures = true;
@@ -109,16 +93,22 @@ namespace TextureToolkit
         mutable std::mutex m_mutex;
         uint64_t m_frame_count = 0;
 
-        std::unordered_set<uint64_t> m_current_frame_resources;
-        std::unordered_set<uint64_t> m_active_frame_resources;
+        // Active-scene tracking is keyed by content hash (immune to driver pointer reuse).
+        std::unordered_set<uint32_t> m_current_frame_hashes;
+        std::unordered_set<uint32_t> m_active_frame_hashes;
         std::unordered_set<uint32_t> m_requested_dumps;
         std::unordered_map<uint32_t, std::filesystem::path> m_injected_files;
         std::unordered_map<uint32_t, TextureDetails> m_tracked_textures;
-        std::unordered_map<uint64_t, uint32_t> m_resource_to_hash;
 
-        // Replacement maps
-        std::unordered_map<uint64_t, uint64_t> m_d3d9_replacements; // orig IDirect3DBaseTexture9* -> highres IDirect3DBaseTexture9*
-        std::unordered_map<uint64_t, uint64_t> m_d3d11_replacements; // orig ID3D11ShaderResourceView* -> highres ID3D11ShaderResourceView*
+        // Replacement maps are keyed by content hash, not by raw resource pointer.
+        // The original resource is tagged with its hash via D3D private data
+        // (TT_HASH_GUID), which the driver clears when the object is destroyed, so a
+        // reused pointer can never inherit a stale replacement.
+        // We own exactly one COM reference for each stored replacement.
+        std::unordered_map<uint32_t, IDirect3DBaseTexture9 *> m_d3d9_replacements;
+        std::unordered_map<uint32_t, ID3D11ShaderResourceView *> m_d3d11_replacements;
+
+        void release_replacements();
 
         // Background dump worker
         struct DumpRequest

@@ -19,6 +19,9 @@ namespace TextureToolkit
 
         bool show_osd_banner = true;
         float osd_duration_seconds = 6.0f;
+
+        // When true, per-texture/per-hook Debug logging is written (very chatty).
+        bool verbose = false;
     };
 
     class ConfigManager
