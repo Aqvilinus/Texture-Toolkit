@@ -263,7 +263,7 @@ namespace TextureToolkit
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
 
-        TextureToolkitUI::draw_ui(nullptr);
+        TextureToolkitUI::draw_ui();
 
         ImGui::EndFrame();
         ImGui::Render();

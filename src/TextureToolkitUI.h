@@ -10,7 +10,7 @@ namespace TextureToolkit
     class TextureToolkitUI
     {
     public:
-        static void draw_ui(void *runtime = nullptr);
+        static void draw_ui();
 
         // Feeds ImGui the OS mouse position and button state directly, and enables the
         // software cursor. Call once per frame (inside the g_inside_imgui_render window)

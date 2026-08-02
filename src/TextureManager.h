@@ -50,7 +50,6 @@ namespace TextureToolkit
         std::string filepath_dumped;
         std::string filepath_injected;
 
-        uint64_t resource_handle = 0;
         uint64_t replacement_handle = 0;
         uint64_t last_seen_frame = 0;
     };

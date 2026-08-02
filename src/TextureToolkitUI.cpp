@@ -7,8 +7,6 @@
 #include <shellapi.h>
 #include <vector>
 #include <string>
-#include <sstream>
-#include <iomanip>
 #include <algorithm>
 #include <imgui.h>
 
@@ -212,6 +210,8 @@ namespace TextureToolkit
                 MetaRow("Bind flags", buf);
                 std::snprintf(buf, sizeof(buf), "%u", tex.usage);
                 MetaRow("Usage", buf);
+                std::snprintf(buf, sizeof(buf), "0x%02X", tex.cpu_access);
+                MetaRow("CPU access", buf);
                 std::snprintf(buf, sizeof(buf), "0x%02X", tex.misc_flags);
                 MetaRow("Misc flags", buf);
             }
@@ -239,7 +239,7 @@ namespace TextureToolkit
         }
     }
 
-    void TextureToolkitUI::draw_ui(void *runtime)
+    void TextureToolkitUI::draw_ui()
     {
         OSDBanner::get().draw_osd();
 
