@@ -255,6 +255,33 @@ namespace TextureToolkit
             || f >= DXGI_FORMAT_BC6H_TYPELESS && f <= DXGI_FORMAT_BC7_UNORM_SRGB;
     }
 
+    // TYPELESS formats cannot back a shader resource view, and most DDS tools cannot read
+    // them. Map them to the matching UNORM view format. Concrete formats, including the
+    // _SRGB variants, pass through unchanged so sRGB intent is preserved.
+    static DXGI_FORMAT dxgi_concrete_format(DXGI_FORMAT f)
+    {
+        switch (f)
+        {
+        case DXGI_FORMAT_BC1_TYPELESS:          return DXGI_FORMAT_BC1_UNORM;
+        case DXGI_FORMAT_BC2_TYPELESS:          return DXGI_FORMAT_BC2_UNORM;
+        case DXGI_FORMAT_BC3_TYPELESS:          return DXGI_FORMAT_BC3_UNORM;
+        case DXGI_FORMAT_BC4_TYPELESS:          return DXGI_FORMAT_BC4_UNORM;
+        case DXGI_FORMAT_BC5_TYPELESS:          return DXGI_FORMAT_BC5_UNORM;
+        case DXGI_FORMAT_BC6H_TYPELESS:         return DXGI_FORMAT_BC6H_UF16;
+        case DXGI_FORMAT_BC7_TYPELESS:          return DXGI_FORMAT_BC7_UNORM;
+        case DXGI_FORMAT_R8G8B8A8_TYPELESS:     return DXGI_FORMAT_R8G8B8A8_UNORM;
+        case DXGI_FORMAT_B8G8R8A8_TYPELESS:     return DXGI_FORMAT_B8G8R8A8_UNORM;
+        case DXGI_FORMAT_B8G8R8X8_TYPELESS:     return DXGI_FORMAT_B8G8R8X8_UNORM;
+        case DXGI_FORMAT_R16G16B16A16_TYPELESS: return DXGI_FORMAT_R16G16B16A16_UNORM;
+        case DXGI_FORMAT_R10G10B10A2_TYPELESS:  return DXGI_FORMAT_R10G10B10A2_UNORM;
+        case DXGI_FORMAT_R8G8_TYPELESS:         return DXGI_FORMAT_R8G8_UNORM;
+        case DXGI_FORMAT_R8_TYPELESS:           return DXGI_FORMAT_R8_UNORM;
+        case DXGI_FORMAT_R16G16_TYPELESS:       return DXGI_FORMAT_R16G16_UNORM;
+        case DXGI_FORMAT_R16_TYPELESS:          return DXGI_FORMAT_R16_UNORM;
+        default:                                return f;
+        }
+    }
+
     static bool dxgi_format_is_srgb(DXGI_FORMAT f)
     {
         switch (f)
@@ -406,12 +433,14 @@ namespace TextureToolkit
             if (dev == nullptr)
                 return 0;
 
+            DXGI_FORMAT view_fmt = dxgi_concrete_format(static_cast<DXGI_FORMAT>(dds.format));
+
             D3D11_TEXTURE2D_DESC desc = {};
             desc.Width = dds.width;
             desc.Height = dds.height;
             desc.MipLevels = 1;
             desc.ArraySize = 1;
-            desc.Format = static_cast<DXGI_FORMAT>(dds.format);
+            desc.Format = view_fmt;
             desc.SampleDesc.Count = 1;
             desc.Usage = D3D11_USAGE_DEFAULT;
             desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
@@ -525,7 +554,35 @@ namespace TextureToolkit
                 it->second.last_seen_frame = m_frame_count;
         }
 
+        // Trim the tracked list occasionally (every ~5s at 60 fps) so it stays bounded.
+        if (m_frame_count % 300 == 0)
+            evict_stale_textures();
+
         process_readback_queue();
+    }
+
+    void TextureManager::evict_stale_textures()
+    {
+        // Remove textures not drawn for a while. Keep anything with a loaded replacement,
+        // the texture currently selected for preview, and any hash that has an inject file,
+        // so injected and selected textures never disappear from the panel.
+        constexpr uint64_t kEvictAgeFrames = 3600; // ~1 minute at 60 fps
+        if (m_frame_count < kEvictAgeFrames)
+            return;
+
+        for (auto it = m_tracked_textures.begin(); it != m_tracked_textures.end();)
+        {
+            const TextureDetails &d = it->second;
+            bool stale = d.last_seen_frame + kEvictAgeFrames < m_frame_count;
+            bool keep = d.replacement_handle != 0 ||
+                        it->first == m_preview_target_hash ||
+                        m_injected_files.find(it->first) != m_injected_files.end();
+
+            if (stale && !keep)
+                it = m_tracked_textures.erase(it);
+            else
+                ++it;
+        }
     }
 
     void TextureManager::rescan_injected()
@@ -913,6 +970,22 @@ namespace TextureToolkit
         std::lock_guard<std::mutex> lock(m_mutex);
         m_current_frame_hashes.insert(hash);
 
+        // Record how the game samples this texture (the SRV's concrete view format). Done
+        // once per texture; it reveals the sRGB intent that a TYPELESS resource hides.
+        {
+            auto tit = m_tracked_textures.find(hash);
+            if (tit != m_tracked_textures.end() && tit->second.view_format_id == 0)
+            {
+                D3D11_SHADER_RESOURCE_VIEW_DESC vd = {};
+                orig->GetDesc(&vd);
+                if (vd.Format != DXGI_FORMAT_UNKNOWN)
+                {
+                    tit->second.view_format_id = static_cast<uint32_t>(vd.Format);
+                    tit->second.view_format_str = dxgi_format_name(vd.Format);
+                }
+            }
+        }
+
         // Pin the live original SRV for preview if this is the selected texture.
         if (hash == m_preview_target_hash && m_preview_srv11 == nullptr)
         {
@@ -1019,12 +1092,15 @@ namespace TextureToolkit
                         Logger::get().error("[TextureManager] Injected DDS 0x" + format_hash_hex(hash) + " is missing mip levels (" + std::to_string(mips.size()) + "/" + std::to_string(target_levels) + "). Compressed replacements must ship a full mip chain; re-export with mipmaps to avoid shimmering at distance.");
                     }
 
+                    // Use a concrete (non-TYPELESS) format so the SRV is valid.
+                    DXGI_FORMAT view_fmt = dxgi_concrete_format(static_cast<DXGI_FORMAT>(dds.format));
+
                     D3D11_TEXTURE2D_DESC desc = {};
                     desc.Width = dds.width;
                     desc.Height = dds.height;
                     desc.MipLevels = static_cast<UINT>(mips.size());
                     desc.ArraySize = 1;
-                    desc.Format = static_cast<DXGI_FORMAT>(dds.format);
+                    desc.Format = view_fmt;
                     desc.SampleDesc.Count = 1;
                     desc.SampleDesc.Quality = 0;
                     desc.Usage = D3D11_USAGE_DEFAULT;
@@ -1144,6 +1220,9 @@ namespace TextureToolkit
         if (data == nullptr || width == 0 || height == 0)
             return {};
 
+        // Write a concrete format, not TYPELESS, so the .dds is viewable and re-injectable.
+        format = dxgi_concrete_format(format);
+
         std::error_code ec;
         std::filesystem::create_directories(m_dump_dir, ec);
 
@@ -1250,33 +1329,61 @@ namespace TextureToolkit
         if (base == nullptr)
             return {};
 
-        std::string path;
         IDirect3DTexture9 *tex = nullptr;
-        if (SUCCEEDED(base->QueryInterface(__uuidof(IDirect3DTexture9), reinterpret_cast<void **>(&tex))) && tex != nullptr)
+        if (FAILED(base->QueryInterface(__uuidof(IDirect3DTexture9), reinterpret_cast<void **>(&tex))) || tex == nullptr)
+            return {};
+
+        std::string path;
+        D3DSURFACE_DESC sd = {};
+        if (SUCCEEDED(tex->GetLevelDesc(0, &sd)))
         {
-            D3DSURFACE_DESC sd = {};
-            if (SUCCEEDED(tex->GetLevelDesc(0, &sd)))
+            DXGI_FORMAT dxgi = d3d9_format_to_dxgi(sd.Format);
+
+            D3D9Hook::s_inside_injection = true;
+
+            D3DLOCKED_RECT lr = {};
+            if (dxgi != DXGI_FORMAT_UNKNOWN && SUCCEEDED(tex->LockRect(0, &lr, nullptr, D3DLOCK_READONLY)))
             {
-                DXGI_FORMAT dxgi = d3d9_format_to_dxgi(sd.Format);
-                D3DLOCKED_RECT lr = {};
-
-                D3D9Hook::s_inside_injection = true;
-                HRESULT hr = tex->LockRect(0, &lr, nullptr, D3DLOCK_READONLY);
-                if (SUCCEEDED(hr))
-                {
-                    if (lr.pBits != nullptr && dxgi != DXGI_FORMAT_UNKNOWN)
-                        path = write_dump_dds(hash, sd.Width, sd.Height, dxgi, lr.pBits, lr.Pitch);
-                    tex->UnlockRect(0);
-                }
-                D3D9Hook::s_inside_injection = false;
-
-                if (dxgi == DXGI_FORMAT_UNKNOWN)
-                    Logger::get().error("[TextureManager] Cannot dump 0x" + format_hash_hex(hash) + ": unsupported D3D9 format for DDS export.");
-                else if (FAILED(hr))
-                    Logger::get().error("[TextureManager] Cannot dump 0x" + format_hash_hex(hash) + ": LockRect failed (texture may be in the default pool).");
+                // Lockable pool (managed / system memory / dynamic).
+                if (lr.pBits != nullptr)
+                    path = write_dump_dds(hash, sd.Width, sd.Height, dxgi, lr.pBits, lr.Pitch);
+                tex->UnlockRect(0);
             }
-            tex->Release();
+            else if (dxgi != DXGI_FORMAT_UNKNOWN && (sd.Usage & D3DUSAGE_RENDERTARGET))
+            {
+                // Render target: copy to a system-memory surface, then read that back.
+                IDirect3DDevice9 *dev = D3D9Hook::get().get_device();
+                IDirect3DSurface9 *src = nullptr;
+                IDirect3DSurface9 *dst = nullptr;
+                if (dev != nullptr && SUCCEEDED(tex->GetSurfaceLevel(0, &src)) && src != nullptr)
+                {
+                    if (SUCCEEDED(dev->CreateOffscreenPlainSurface(sd.Width, sd.Height, sd.Format, D3DPOOL_SYSTEMMEM, &dst, nullptr)) && dst != nullptr)
+                    {
+                        D3DLOCKED_RECT lr2 = {};
+                        if (SUCCEEDED(dev->GetRenderTargetData(src, dst)) &&
+                            SUCCEEDED(dst->LockRect(&lr2, nullptr, D3DLOCK_READONLY)))
+                        {
+                            path = write_dump_dds(hash, sd.Width, sd.Height, dxgi, lr2.pBits, lr2.Pitch);
+                            dst->UnlockRect();
+                        }
+                        dst->Release();
+                    }
+                    src->Release();
+                }
+            }
+
+            D3D9Hook::s_inside_injection = false;
+
+            if (path.empty())
+            {
+                if (dxgi == DXGI_FORMAT_UNKNOWN)
+                    Logger::get().warn("[TextureManager] Cannot dump 0x" + format_hash_hex(hash) + ": unsupported D3D9 format for DDS export.");
+                else
+                    Logger::get().warn("[TextureManager] Cannot dump 0x" + format_hash_hex(hash) + ": a default-pool, non-render-target D3D9 texture cannot be read back on demand; Auto-dump captures these from the upload instead.");
+            }
         }
+
+        tex->Release();
         return path;
     }
 

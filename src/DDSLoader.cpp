@@ -108,18 +108,33 @@ namespace TextureToolkit
             else if (header.ddspf.dwFourCC == MAKE_FOURCC('A', 'T', 'I', '2') || header.ddspf.dwFourCC == MAKE_FOURCC('B', 'C', '5', 'U'))
                 fmt = reshade::api::format::bc5_unorm;
         }
-        else
-        {
-            if (header.ddspf.dwRGBBitCount == 32)
-                fmt = reshade::api::format::r8g8b8a8_unorm;
-            else if (header.ddspf.dwRGBBitCount == 24)
-                fmt = reshade::api::format::r8g8b8a8_unorm;
-        }
+        // Non-FOURCC uncompressed. 24-bit has no GPU texture format, so it is read at
+        // 3 bytes/pixel and expanded to 32-bit RGBA here (fixes both the byte size and the
+        // channel layout). 32-bit is taken as-is.
+        const bool expand_24 = ((header.ddspf.dwFlags & DDPF_FOURCC) == 0) && header.ddspf.dwRGBBitCount == 24;
+
+        if ((header.ddspf.dwFlags & DDPF_FOURCC) == 0 &&
+            (header.ddspf.dwRGBBitCount == 32 || header.ddspf.dwRGBBitCount == 24))
+            fmt = reshade::api::format::r8g8b8a8_unorm;
 
         if (fmt == reshade::api::format::unknown)
             fmt = reshade::api::format::r8g8b8a8_unorm;
 
         out_image.format = fmt;
+
+        // Byte offset of each channel within a source pixel, from the DDS masks. Defaults
+        // to B,G,R order (D3DFMT_R8G8B8) when the masks are absent.
+        auto mask_byte = [](uint32_t m) -> int {
+            if (m & 0x000000FFu) return 0;
+            if (m & 0x0000FF00u) return 1;
+            if (m & 0x00FF0000u) return 2;
+            if (m & 0xFF000000u) return 3;
+            return -1;
+        };
+        int rb = mask_byte(header.ddspf.dwRBitMask);
+        int gb = mask_byte(header.ddspf.dwGBitMask);
+        int bb = mask_byte(header.ddspf.dwBBitMask);
+        if (rb < 0 || gb < 0 || bb < 0) { rb = 2; gb = 1; bb = 0; }
 
         uint32_t current_w = out_image.width;
         uint32_t current_h = out_image.height;
@@ -133,9 +148,34 @@ namespace TextureToolkit
                 slice_pitch = row_pitch * current_h;
 
             std::vector<uint8_t> buffer(slice_pitch);
-            file.read(reinterpret_cast<char *>(buffer.data()), slice_pitch);
-            if (file.gcount() < static_cast<std::streamsize>(slice_pitch))
-                break;
+
+            if (expand_24)
+            {
+                const uint32_t src_row = current_w * 3;
+                std::vector<uint8_t> src(static_cast<size_t>(src_row) * current_h);
+                file.read(reinterpret_cast<char *>(src.data()), src.size());
+                if (file.gcount() < static_cast<std::streamsize>(src.size()))
+                    break;
+
+                for (uint32_t y = 0; y < current_h; ++y)
+                {
+                    for (uint32_t x = 0; x < current_w; ++x)
+                    {
+                        const uint8_t *s = &src[static_cast<size_t>(y) * src_row + x * 3];
+                        uint8_t *d = &buffer[static_cast<size_t>(y) * row_pitch + x * 4];
+                        d[0] = s[rb];
+                        d[1] = s[gb];
+                        d[2] = s[bb];
+                        d[3] = 255;
+                    }
+                }
+            }
+            else
+            {
+                file.read(reinterpret_cast<char *>(buffer.data()), slice_pitch);
+                if (file.gcount() < static_cast<std::streamsize>(slice_pitch))
+                    break;
+            }
 
             out_image.subresources.push_back(std::move(buffer));
             out_image.row_pitches.push_back(row_pitch);

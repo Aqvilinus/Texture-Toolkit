@@ -208,6 +208,12 @@ namespace TextureToolkit
             std::snprintf(buf, sizeof(buf), "%u  (%s)", tex.format_id, tex.format_str.c_str());
             MetaRow("Format", buf);
 
+            if (tex.view_format_id != 0 && tex.view_format_id != tex.format_id)
+            {
+                std::snprintf(buf, sizeof(buf), "%u  (%s)", tex.view_format_id, tex.view_format_str.c_str());
+                MetaRow("Sampled as", buf);
+            }
+
             MetaRow("Compressed", tex.is_compressed ? "Yes" : "No");
             MetaRow("sRGB", tex.is_srgb ? "Yes" : "No");
 

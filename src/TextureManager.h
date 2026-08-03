@@ -41,6 +41,11 @@ namespace TextureToolkit
         bool is_srgb = false;
         bool is_dx11 = false;
 
+        // How the game actually samples the texture (the SRV's view format). For a TYPELESS
+        // resource this is where the concrete format and sRGB intent live. 0 until first drawn.
+        uint32_t view_format_id = 0;
+        std::string view_format_str;
+
         // DX11 resource description (0 / defaults on DX9).
         uint32_t array_size = 1;
         uint32_t bind_flags = 0;
@@ -194,6 +199,10 @@ namespace TextureToolkit
         std::unordered_set<uint32_t> m_pending_dumps;
         std::vector<PendingReadback> m_readback_queue;
         void process_readback_queue();
+
+        // Drops long-unseen tracked textures so the map does not grow without bound over a
+        // long session. Caller MUST hold m_mutex.
+        void evict_stale_textures();
 
         std::filesystem::path find_injection_path(uint32_t hash);
     };
