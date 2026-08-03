@@ -146,7 +146,7 @@ namespace TextureToolkit
             if (tm.request_dump(tex.hash))
                 SetStatusMessage("Dumped " + hash + " to TT/dump.");
             else
-                SetStatusMessage("Dump failed for " + hash + " (see log).");
+                SetStatusMessage("Could not dump " + hash + ". For default-pool textures, turn on Auto-dump (see log).");
         }
 
         ImGui::Spacing();

@@ -1373,18 +1373,10 @@ namespace TextureToolkit
             }
 
             D3D9Hook::s_inside_injection = false;
-
-            if (path.empty())
-            {
-                if (dxgi == DXGI_FORMAT_UNKNOWN)
-                    Logger::get().warn("[TextureManager] Cannot dump 0x" + format_hash_hex(hash) + ": unsupported D3D9 format for DDS export.");
-                else
-                    Logger::get().warn("[TextureManager] Cannot dump 0x" + format_hash_hex(hash) + ": a default-pool, non-render-target D3D9 texture cannot be read back on demand; Auto-dump captures these from the upload instead.");
-            }
         }
 
         tex->Release();
-        return path;
+        return path; // request_dump reports the failure with context
     }
 
     bool TextureManager::request_dump(uint32_t hash)
@@ -1406,8 +1398,10 @@ namespace TextureToolkit
             return false;
         }
 
+        bool attempted = false;
         if (d.is_dx11 && m_preview_srv11 != nullptr)
         {
+            attempted = true;
             ID3D11Resource *res = nullptr;
             m_preview_srv11->GetResource(&res);
             if (res != nullptr)
@@ -1418,6 +1412,7 @@ namespace TextureToolkit
         }
         else if (!d.is_dx11 && m_preview_tex9 != nullptr)
         {
+            attempted = true;
             path = dump_base_texture9(hash, m_preview_tex9);
         }
 
@@ -1429,7 +1424,10 @@ namespace TextureToolkit
             return true;
         }
 
-        Logger::get().warn("[TextureManager] Cannot dump 0x" + format_hash_hex(hash) + ": make sure it is visible on screen (default-pool textures cannot be read back on DX9; use auto-dump for those).");
+        if (!attempted)
+            Logger::get().warn("[TextureManager] Cannot dump 0x" + format_hash_hex(hash) + ": it is not currently on screen. Select it while it is being drawn, then Dump.");
+        else
+            Logger::get().warn("[TextureManager] Cannot dump 0x" + format_hash_hex(hash) + ": this texture cannot be read back on demand (D3D9 default-pool). Turn on Auto-dump to capture it from the upload at load time.");
         return false;
     }
 

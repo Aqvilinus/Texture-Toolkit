@@ -31,6 +31,8 @@ namespace TextureToolkit
         typedef HRESULT(WINAPI *Direct3DCreate9Ex_t)(UINT, IDirect3D9Ex **);
         typedef HRESULT(WINAPI *CreateDevice_t)(IDirect3D9 *, UINT, D3DDEVTYPE, HWND, DWORD, D3DPRESENT_PARAMETERS *, IDirect3DDevice9 **);
         typedef HRESULT(STDMETHODCALLTYPE *Present_t)(IDirect3DDevice9 *, const RECT *, const RECT *, HWND, const RGNDATA *);
+        typedef HRESULT(STDMETHODCALLTYPE *PresentEx_t)(IDirect3DDevice9Ex *, const RECT *, const RECT *, HWND, const RGNDATA *, DWORD);
+        typedef HRESULT(STDMETHODCALLTYPE *SwapChainPresent_t)(IDirect3DSwapChain9 *, const RECT *, const RECT *, HWND, const RGNDATA *, DWORD);
         typedef HRESULT(STDMETHODCALLTYPE *Reset_t)(IDirect3DDevice9 *, D3DPRESENT_PARAMETERS *);
         typedef HRESULT(STDMETHODCALLTYPE *CreateTexture_t)(IDirect3DDevice9 *, UINT, UINT, UINT, DWORD, D3DFORMAT, D3DPOOL, IDirect3DTexture9 **, HANDLE *);
         typedef HRESULT(STDMETHODCALLTYPE *LockRect_t)(IDirect3DTexture9 *, UINT, D3DLOCKED_RECT *, const RECT *, DWORD);
@@ -46,6 +48,8 @@ namespace TextureToolkit
         static HRESULT WINAPI Hooked_Direct3DCreate9Ex(UINT SDKVersion, IDirect3D9Ex **ppD3D);
         static HRESULT WINAPI Hooked_CreateDevice(IDirect3D9 *d3d9, UINT Adapter, D3DDEVTYPE DeviceType, HWND hFocusWindow, DWORD BehaviorFlags, D3DPRESENT_PARAMETERS *pPresentationParameters, IDirect3DDevice9 **ppReturnDeviceInterface);
         static HRESULT STDMETHODCALLTYPE Hooked_Present(IDirect3DDevice9 *device, const RECT *pSourceRect, const RECT *pDestRect, HWND hDestWindowOverride, const RGNDATA *pDirtyRegion);
+        static HRESULT STDMETHODCALLTYPE Hooked_PresentEx(IDirect3DDevice9Ex *device, const RECT *pSourceRect, const RECT *pDestRect, HWND hDestWindowOverride, const RGNDATA *pDirtyRegion, DWORD dwFlags);
+        static HRESULT STDMETHODCALLTYPE Hooked_SwapChainPresent(IDirect3DSwapChain9 *swapchain, const RECT *pSourceRect, const RECT *pDestRect, HWND hDestWindowOverride, const RGNDATA *pDirtyRegion, DWORD dwFlags);
         static HRESULT STDMETHODCALLTYPE Hooked_Reset(IDirect3DDevice9 *device, D3DPRESENT_PARAMETERS *pPresentationParameters);
         static HRESULT STDMETHODCALLTYPE Hooked_CreateTexture(IDirect3DDevice9 *device, UINT Width, UINT Height, UINT Levels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, IDirect3DTexture9 **ppTexture, HANDLE *pSharedHandle);
         static HRESULT STDMETHODCALLTYPE Hooked_LockRect(IDirect3DTexture9 *texture, UINT Level, D3DLOCKED_RECT *pLockedRect, const RECT *pRect, DWORD Flags);
@@ -70,6 +74,8 @@ namespace TextureToolkit
         Direct3DCreate9Ex_t m_orig_direct3d_create9_ex = nullptr;
         CreateDevice_t m_orig_create_device = nullptr;
         Present_t m_orig_present = nullptr;
+        PresentEx_t m_orig_present_ex = nullptr;
+        SwapChainPresent_t m_orig_swapchain_present = nullptr;
         Reset_t m_orig_reset = nullptr;
         CreateTexture_t m_orig_create_texture = nullptr;
         LockRect_t m_orig_lock_rect = nullptr;

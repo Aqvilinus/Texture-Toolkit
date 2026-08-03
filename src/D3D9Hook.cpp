@@ -157,6 +157,30 @@ namespace TextureToolkit
         HookManager::get().create_hook(update_tex_addr, &Hooked_UpdateTexture, reinterpret_cast<void **>(&m_orig_update_texture));
         HookManager::get().create_hook(set_tex_addr, &Hooked_SetTexture, reinterpret_cast<void **>(&m_orig_set_texture));
 
+        // D3D9Ex devices (e.g. GTA IV) present through PresentEx, which is a separate vtable
+        // slot (121). Present (17) never fires for them, so hook PresentEx as well.
+        IDirect3DDevice9Ex *device_ex = nullptr;
+        if (SUCCEEDED(device->QueryInterface(__uuidof(IDirect3DDevice9Ex), reinterpret_cast<void **>(&device_ex))) && device_ex != nullptr)
+        {
+            void **ex_vtable = *reinterpret_cast<void ***>(device_ex);
+            void *present_ex_addr = ex_vtable[121]; // IDirect3DDevice9Ex::PresentEx
+            HookManager::get().create_hook(present_ex_addr, &Hooked_PresentEx, reinterpret_cast<void **>(&m_orig_present_ex));
+            Logger::get().info("[D3D9Hook] Device is D3D9Ex; hooked PresentEx (VTable index 121).");
+            device_ex->Release();
+        }
+
+        // Some games (e.g. GTA IV) present through the swap chain, not the device, so
+        // Present/PresentEx never fire. Hook the implicit swap chain's Present as well.
+        IDirect3DSwapChain9 *swapchain = nullptr;
+        if (SUCCEEDED(device->GetSwapChain(0, &swapchain)) && swapchain != nullptr)
+        {
+            void **sc_vtable = *reinterpret_cast<void ***>(swapchain);
+            void *sc_present_addr = sc_vtable[3]; // IDirect3DSwapChain9::Present
+            HookManager::get().create_hook(sc_present_addr, &Hooked_SwapChainPresent, reinterpret_cast<void **>(&m_orig_swapchain_present));
+            Logger::get().info("[D3D9Hook] Hooked IDirect3DSwapChain9::Present (VTable index 3).");
+            swapchain->Release();
+        }
+
         Logger::get().info("[D3D9Hook] REAL GAME DEVICE INTERCEPTED! VTable hooks active on game IDirect3DDevice9.");
     }
 
@@ -299,11 +323,59 @@ namespace TextureToolkit
         return hr;
     }
 
+    // Guards against rendering the overlay twice when a game's device Present internally
+    // routes through the swap chain Present (or vice versa). Only the outermost present
+    // draws the overlay.
+    static bool s_in_present = false;
+
     HRESULT STDMETHODCALLTYPE D3D9Hook::Hooked_Present(IDirect3DDevice9 *device, const RECT *pSourceRect, const RECT *pDestRect, HWND hDestWindowOverride, const RGNDATA *pDirtyRegion)
     {
-        get().m_device = device;
-        get().render_imgui(device);
+        if (!s_in_present)
+        {
+            static bool s_logged = false;
+            if (!s_logged) { s_logged = true; Logger::get().info("[D3D9Hook] First Present() call; overlay renders through Present."); }
+
+            s_in_present = true;
+            get().m_device = device;
+            get().render_imgui(device);
+            HRESULT hr = get().m_orig_present(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
+            s_in_present = false;
+            return hr;
+        }
         return get().m_orig_present(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
+    }
+
+    HRESULT STDMETHODCALLTYPE D3D9Hook::Hooked_PresentEx(IDirect3DDevice9Ex *device, const RECT *pSourceRect, const RECT *pDestRect, HWND hDestWindowOverride, const RGNDATA *pDirtyRegion, DWORD dwFlags)
+    {
+        if (!s_in_present)
+        {
+            static bool s_logged = false;
+            if (!s_logged) { s_logged = true; Logger::get().info("[D3D9Hook] First PresentEx() call; overlay renders through PresentEx."); }
+
+            s_in_present = true;
+            get().m_device = device;
+            get().render_imgui(device);
+            HRESULT hr = get().m_orig_present_ex(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
+            s_in_present = false;
+            return hr;
+        }
+        return get().m_orig_present_ex(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
+    }
+
+    HRESULT STDMETHODCALLTYPE D3D9Hook::Hooked_SwapChainPresent(IDirect3DSwapChain9 *swapchain, const RECT *pSourceRect, const RECT *pDestRect, HWND hDestWindowOverride, const RGNDATA *pDirtyRegion, DWORD dwFlags)
+    {
+        if (!s_in_present && get().m_device != nullptr)
+        {
+            static bool s_logged = false;
+            if (!s_logged) { s_logged = true; Logger::get().info("[D3D9Hook] First SwapChain Present() call; overlay renders through the swap chain."); }
+
+            s_in_present = true;
+            get().render_imgui(get().m_device);
+            HRESULT hr = get().m_orig_swapchain_present(swapchain, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
+            s_in_present = false;
+            return hr;
+        }
+        return get().m_orig_swapchain_present(swapchain, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
     }
 
     HRESULT STDMETHODCALLTYPE D3D9Hook::Hooked_Reset(IDirect3DDevice9 *device, D3DPRESENT_PARAMETERS *pPresentationParameters)
