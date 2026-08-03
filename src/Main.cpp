@@ -15,6 +15,9 @@
 #include "D3D11Hook.h"
 #include "DInput8Hook.h"
 
+// Handle to our own module (.asi). Set in DllMain before initialize_standalone runs.
+HMODULE g_our_module = nullptr;
+
 namespace TextureToolkit
 {
     void initialize_standalone()
@@ -22,12 +25,19 @@ namespace TextureToolkit
         wchar_t exe_path[MAX_PATH] = L"";
         GetModuleFileNameW(nullptr, exe_path, ARRAYSIZE(exe_path));
         std::filesystem::path game_dir = std::filesystem::path(exe_path).parent_path();
-        std::filesystem::path tt_dir = game_dir / "TT";
 
-        Logger::get().init(tt_dir);
-        Logger::get().info("[Main] Texture Toolkit Standalone v1.0.0 initializing...");
+        // Keep the .ini and .log next to the .asi (usually the plugins/ or scripts/ folder),
+        // so they are easy to find and the dump/inject folders can be re-pointed in the .ini.
+        wchar_t module_path[MAX_PATH] = L"";
+        GetModuleFileNameW(g_our_module, module_path, ARRAYSIZE(module_path));
+        std::filesystem::path asi_dir = std::filesystem::path(module_path).parent_path();
+        if (asi_dir.empty())
+            asi_dir = game_dir;
 
-        ConfigManager::get().init(game_dir);
+        Logger::get().init(asi_dir);
+        Logger::get().info("[Main] Texture Toolkit v1.0.0 initializing...");
+
+        ConfigManager::get().init(asi_dir);
         Logger::get().set_min_level(ConfigManager::get().get_config().verbose ? LogLevel::Debug : LogLevel::Info);
 
         TextureManager::get().init();
@@ -50,8 +60,6 @@ namespace TextureToolkit
         HookManager::get().shutdown();
     }
 }
-
-HMODULE g_our_module = nullptr;
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD fdwReason, LPVOID lpvReserved)
 {

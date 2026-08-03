@@ -52,14 +52,14 @@ Match the build to the game: a 32-bit game needs the x86 build.
 ## Installing
 
 1. Copy `TextureToolkit.asi` into the game folder, or into a `plugins/` or `scripts/` folder when using Ultimate ASI Loader. To load it as a proxy instead, rename it to `dinput8.dll`, `d3d9.dll`, or `dxgi.dll`.
-2. Launch the game. Texture Toolkit creates a `TT/` folder next to the executable containing `dump/`, `inject/`, a log, and `TextureToolkit.ini`.
+2. Launch the game. Texture Toolkit writes `TextureToolkit.ini` and its log next to the `.asi`, and creates a `TT/` folder next to the executable containing `dump/`, `inject/`, and `imgui.ini`.
 3. Press `INSERT` to open the panel.
 
 To replace a texture, read its hash from the panel (or dump it first), edit the `.dds`, and place it in `TT/inject` named after the hash, for example `5D3E2CCE.dds` or `0x5D3E2CCE.dds`. Export it with a full mip chain if it is block-compressed.
 
 ## Configuration
 
-`TT/TextureToolkit.ini` is created on first run:
+`TextureToolkit.ini` is created next to the `.asi` on first run:
 
 ```ini
 [TextureToolkit]
@@ -69,7 +69,7 @@ InjectDir=TT/inject
 EnableInjection=1
 AutoDump=0
 FilterSmallTextures=1
-ShowCurrentFrameOnly=0
+ShowCurrentFrameOnly=1
 ShowOSDBanner=1
 Verbose=0
 ```

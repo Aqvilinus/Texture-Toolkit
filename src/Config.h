@@ -15,7 +15,7 @@ namespace TextureToolkit
         bool enable_injection = true;
         bool auto_dump = false;
         bool filter_small_textures = true;
-        bool show_current_frame_only = false;
+        bool show_current_frame_only = true;
 
         bool show_osd_banner = true;
         float osd_duration_seconds = 6.0f;
@@ -29,7 +29,7 @@ namespace TextureToolkit
     public:
         static ConfigManager &get();
 
-        void init(const std::filesystem::path &game_dir);
+        void init(const std::filesystem::path &config_dir);
         void load();
         void save();
 

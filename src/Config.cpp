@@ -11,9 +11,9 @@ namespace TextureToolkit
         return instance;
     }
 
-    void ConfigManager::init(const std::filesystem::path &game_dir)
+    void ConfigManager::init(const std::filesystem::path &config_dir)
     {
-        m_ini_path = game_dir / "TT" / "TextureToolkit.ini";
+        m_ini_path = config_dir / "TextureToolkit.ini";
         load();
     }
 
@@ -54,7 +54,7 @@ namespace TextureToolkit
         m_config.enable_injection = GetPrivateProfileIntW(L"TextureToolkit", L"EnableInjection", 1, ini_w) != 0;
         m_config.auto_dump = GetPrivateProfileIntW(L"TextureToolkit", L"AutoDump", 0, ini_w) != 0;
         m_config.filter_small_textures = GetPrivateProfileIntW(L"TextureToolkit", L"FilterSmallTextures", 1, ini_w) != 0;
-        m_config.show_current_frame_only = GetPrivateProfileIntW(L"TextureToolkit", L"ShowCurrentFrameOnly", 0, ini_w) != 0;
+        m_config.show_current_frame_only = GetPrivateProfileIntW(L"TextureToolkit", L"ShowCurrentFrameOnly", 1, ini_w) != 0;
 
         // OSD
         m_config.show_osd_banner = GetPrivateProfileIntW(L"TextureToolkit", L"ShowOSDBanner", 1, ini_w) != 0;
@@ -80,7 +80,7 @@ namespace TextureToolkit
         file << "[TextureToolkit]\n"
              << "; Virtual Key Code for UI Toggle (0x2D = INSERT, 0x24 = HOME, 0x74 = F5)\n"
              << "HotKey=" << ss.str() << "\n\n"
-             << "; Folder Locations\n"
+             << "; Folder Locations (relative to the game's executable folder, or an absolute path)\n"
              << "DumpDir=" << m_config.dump_dir.string() << "\n"
              << "InjectDir=" << m_config.inject_dir.string() << "\n\n"
              << "; Feature Toggles\n"
