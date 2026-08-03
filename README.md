@@ -2,7 +2,7 @@
   <img src="texture-toolkit.png" alt="Texture Toolkit" width="640">
 </p>
 
-Texture Toolkit dumps and replaces textures at runtime in 32-bit and 64-bit Direct3D 9 and Direct3D 11 games on Windows. It loads as an `.asi` plugin through Ultimate ASI Loader, or as a proxy DLL renamed to `dinput8.dll`, `d3d9.dll`, or `dxgi.dll`. An in-game panel lists the textures in the current scene, shows their format and memory size, and lets you dump or replace them without restarting. It has been tested against Bully: Scholarship Edition (Direct3D 9) and Need for Speed: The Run (Direct3D 11).
+Texture Toolkit dumps and replaces textures at runtime in 32-bit and 64-bit Direct3D 9 and Direct3D 11 games on Windows. It loads as an `.asi` plugin through Ultimate ASI Loader, or as a proxy DLL renamed to `dinput8.dll`, `d3d9.dll`, or `dxgi.dll`. An in-game panel lists the textures in the current scene, shows their format and memory size, and lets you dump or replace them without restarting. It has been tested against Bully: Scholarship Edition (Direct3D 9), Grand Theft Auto IV: Complete Edition (Direct3D 9), and Need for Speed: The Run (Direct3D 11).
 
 ## How it works
 
@@ -87,8 +87,10 @@ Toggling a checkbox in the panel writes its new value back to this file.
 
 ## Limitations
 
+- Direct3D 9 and Direct3D 11 only. DirectX 8, 10, 12, and Vulkan are not hooked.
+- A DirectX 8 game run through a `d3d8to9` wrapper renders as Direct3D 9, so the overlay appears, but its textures stay invisible. The wrapper feeds pixel data into the D3D9 textures through an internal path that never calls a `LockRect`, `UpdateSurface`, `UpdateTexture`, or `StretchRect` we can hook, so there is nothing to hash. Capturing those would require hooking Direct3D 8 directly, which is not implemented. Mafia: The City of Lost Heaven (via the `UseD3D8to9` loader) behaves this way; with `Verbose=1` the log fills with `Hooked_CreateTexture` lines and never a `Tracked` line.
 - Injection reads `.dds` only. Dumps are written as `.dds`.
-- A D3D9 texture in the default pool cannot be read back with `LockRect`, so the panel's Dump button fails on those; auto-dump captures them from the upload instead.
+- A D3D9 texture in the default pool cannot be read back with `LockRect`, so the panel's Dump button fails on those; Auto-dump captures them from the upload instead.
 - A compressed replacement without a full mip chain samples its top level at every distance, which aliases in motion. The missing mips cannot be regenerated from compressed data, so export those with mipmaps.
 
 ## License
