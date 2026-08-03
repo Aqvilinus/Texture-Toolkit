@@ -148,13 +148,17 @@ namespace TextureToolkit
         void *present_addr = vtable[17];
         void *reset_addr = vtable[16];
         void *create_tex_addr = vtable[23];
-        void *update_tex_addr = vtable[31]; // IDirect3DDevice9::UpdateTexture
+        void *update_surface_addr = vtable[30]; // IDirect3DDevice9::UpdateSurface
+        void *update_tex_addr = vtable[31];     // IDirect3DDevice9::UpdateTexture
+        void *stretch_rect_addr = vtable[34];   // IDirect3DDevice9::StretchRect
         void *set_tex_addr = vtable[65];
 
         HookManager::get().create_hook(present_addr, &Hooked_Present, reinterpret_cast<void **>(&m_orig_present));
         HookManager::get().create_hook(reset_addr, &Hooked_Reset, reinterpret_cast<void **>(&m_orig_reset));
         HookManager::get().create_hook(create_tex_addr, &Hooked_CreateTexture, reinterpret_cast<void **>(&m_orig_create_texture));
+        HookManager::get().create_hook(update_surface_addr, &Hooked_UpdateSurface, reinterpret_cast<void **>(&m_orig_update_surface));
         HookManager::get().create_hook(update_tex_addr, &Hooked_UpdateTexture, reinterpret_cast<void **>(&m_orig_update_texture));
+        HookManager::get().create_hook(stretch_rect_addr, &Hooked_StretchRect, reinterpret_cast<void **>(&m_orig_stretch_rect));
         HookManager::get().create_hook(set_tex_addr, &Hooked_SetTexture, reinterpret_cast<void **>(&m_orig_set_texture));
 
         // D3D9Ex devices (e.g. GTA IV) present through PresentEx, which is a separate vtable
@@ -549,8 +553,59 @@ namespace TextureToolkit
         // and copy it into the DEFAULT texture that is actually bound. Carry the hash tag
         // from source to destination so the bound texture is tracked, previewed and injected.
         if (SUCCEEDED(hr) && !s_inside_injection)
+        {
             TextureManager::get().copy_tag9(pSourceTexture, pDestinationTexture);
 
+            static int s_n = 0;
+            if (s_n < 20) { s_n++; Logger::get().debug("[D3D9Hook] Hooked_UpdateTexture called (src->dst texture copy)."); }
+        }
+
+        return hr;
+    }
+
+    // Logs the destination texture of a surface copy so we can find where a wrapper (e.g.
+    // Mafia's d3d8to9) actually uploads texture pixels. Diagnostic only for now.
+    static void log_surface_copy_dest(const char *api, IDirect3DSurface9 *dst)
+    {
+        if (dst == nullptr)
+            return;
+        IDirect3DTexture9 *dst_tex = nullptr;
+        if (SUCCEEDED(dst->GetContainer(__uuidof(IDirect3DTexture9), reinterpret_cast<void **>(&dst_tex))) && dst_tex != nullptr)
+        {
+            D3DSURFACE_DESC sd = {};
+            dst->GetDesc(&sd);
+            Logger::get().debug(std::string("[D3D9Hook] ") + api + ": dst is a texture surface 0x" +
+                                std::to_string(reinterpret_cast<uintptr_t>(dst_tex)) + " " +
+                                std::to_string(sd.Width) + "x" + std::to_string(sd.Height) +
+                                " fmt=" + std::to_string(static_cast<uint32_t>(sd.Format)) +
+                                " pool=" + std::to_string(static_cast<uint32_t>(sd.Pool)));
+            dst_tex->Release();
+        }
+        else
+        {
+            Logger::get().debug(std::string("[D3D9Hook] ") + api + ": dst is not a texture surface.");
+        }
+    }
+
+    HRESULT STDMETHODCALLTYPE D3D9Hook::Hooked_UpdateSurface(IDirect3DDevice9 *device, IDirect3DSurface9 *pSourceSurface, const RECT *pSourceRect, IDirect3DSurface9 *pDestinationSurface, const POINT *pDestPoint)
+    {
+        HRESULT hr = get().m_orig_update_surface(device, pSourceSurface, pSourceRect, pDestinationSurface, pDestPoint);
+        if (SUCCEEDED(hr) && !s_inside_injection)
+        {
+            static int s_n = 0;
+            if (s_n < 30) { s_n++; log_surface_copy_dest("Hooked_UpdateSurface", pDestinationSurface); }
+        }
+        return hr;
+    }
+
+    HRESULT STDMETHODCALLTYPE D3D9Hook::Hooked_StretchRect(IDirect3DDevice9 *device, IDirect3DSurface9 *pSourceSurface, const RECT *pSourceRect, IDirect3DSurface9 *pDestSurface, const RECT *pDestRect, D3DTEXTUREFILTERTYPE Filter)
+    {
+        HRESULT hr = get().m_orig_stretch_rect(device, pSourceSurface, pSourceRect, pDestSurface, pDestRect, Filter);
+        if (SUCCEEDED(hr) && !s_inside_injection)
+        {
+            static int s_n = 0;
+            if (s_n < 30) { s_n++; log_surface_copy_dest("Hooked_StretchRect", pDestSurface); }
+        }
         return hr;
     }
 
