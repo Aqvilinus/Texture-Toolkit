@@ -287,8 +287,8 @@ namespace TextureToolkit
         wchar_t exe_path[MAX_PATH] = L"";
         GetModuleFileNameW(nullptr, exe_path, ARRAYSIZE(exe_path));
         std::filesystem::path game_dir = std::filesystem::path(exe_path).parent_path();
-        std::filesystem::path imgui_ini = game_dir / "TT" / "imgui.ini";
-        
+        std::filesystem::path imgui_ini = game_dir / ConfigManager::get().get_config().resource_root / "imgui.ini";
+
         static std::string ini_path_str = imgui_ini.string();
         ImGui::GetIO().IniFilename = ini_path_str.c_str();
 

@@ -315,11 +315,12 @@ namespace TextureToolkit
         // Load settings from config
         const auto& cfg = ConfigManager::get().get_config();
 
-        // Resolve the dump/inject directories from config. A relative path (the default,
-        // "TT/dump" / "TT/inject") is taken relative to the game directory; an absolute
-        // path is used as-is (operator/ returns the absolute right-hand side).
-        m_dump_dir = m_game_dir / cfg.dump_dir;
-        m_inject_dir = m_game_dir / cfg.inject_dir;
+        // Resolve dump/inject under the resource root. A relative root (the default, "TT") is
+        // taken relative to the game directory; an absolute root is used as-is (operator/
+        // returns the right-hand path when it is absolute).
+        std::filesystem::path root = m_game_dir / cfg.resource_root;
+        m_dump_dir = root / "dump";
+        m_inject_dir = root / "inject";
 
         auto_dump = cfg.auto_dump;
         enable_injection = cfg.enable_injection;

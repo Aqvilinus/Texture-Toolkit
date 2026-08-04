@@ -237,18 +237,28 @@ namespace TextureToolkit
 
         for (const auto &subres : subresources)
         {
-            uint32_t row_pitch = subres.row_pitch;
-            if (row_pitch == 0)
-                row_pitch = reshade::api::format_row_pitch(desc.texture.format, w);
+            // The reader (load_dds) assumes tightly-packed rows, so we must write at the tight
+            // pitch. A source can hand us a larger, padded pitch (D3D11 staging textures are
+            // commonly 256-byte aligned); when it does, copy row by row and drop the padding,
+            // otherwise a texture whose natural pitch is not already aligned dumps skewed.
+            const uint32_t tight_row = reshade::api::format_row_pitch(desc.texture.format, w);
+            uint32_t tight_slice = reshade::api::format_slice_pitch(desc.texture.format, tight_row, h);
+            if (tight_slice == 0)
+                tight_slice = tight_row * h;
 
-            uint32_t slice_pitch = subres.slice_pitch;
-            if (slice_pitch == 0)
-                slice_pitch = reshade::api::format_slice_pitch(desc.texture.format, row_pitch, h);
+            const uint32_t src_row = (subres.row_pitch != 0) ? subres.row_pitch : tight_row;
+            const auto *src = static_cast<const uint8_t *>(subres.data);
 
-            if (slice_pitch == 0)
-                slice_pitch = row_pitch * h;
-
-            file.write(reinterpret_cast<const char *>(subres.data), slice_pitch);
+            if (src_row == tight_row || tight_row == 0)
+            {
+                file.write(reinterpret_cast<const char *>(src), tight_slice);
+            }
+            else
+            {
+                const uint32_t rows = tight_slice / tight_row; // block-rows for BC, pixel-rows otherwise
+                for (uint32_t y = 0; y < rows; ++y)
+                    file.write(reinterpret_cast<const char *>(src + static_cast<size_t>(y) * src_row), tight_row);
+            }
 
             w = (std::max)(1u, w / 2);
             h = (std::max)(1u, h / 2);

@@ -41,14 +41,10 @@ namespace TextureToolkit
             m_config.hotkey = VK_INSERT;
         }
 
-        // Directories
-        wchar_t dump_str[MAX_PATH] = L"";
-        GetPrivateProfileStringW(L"TextureToolkit", L"DumpDir", L"TT/dump", dump_str, MAX_PATH, ini_w);
-        m_config.dump_dir = dump_str;
-
-        wchar_t inject_str[MAX_PATH] = L"";
-        GetPrivateProfileStringW(L"TextureToolkit", L"InjectDir", L"TT/inject", inject_str, MAX_PATH, ini_w);
-        m_config.inject_dir = inject_str;
+        // Resource root: holds dump/, inject/, and imgui.ini.
+        wchar_t root_str[MAX_PATH] = L"";
+        GetPrivateProfileStringW(L"TextureToolkit", L"ResourceRoot", L"TT", root_str, MAX_PATH, ini_w);
+        m_config.resource_root = root_str;
 
         // Toggles
         m_config.enable_injection = GetPrivateProfileIntW(L"TextureToolkit", L"EnableInjection", 1, ini_w) != 0;
@@ -80,9 +76,9 @@ namespace TextureToolkit
         file << "[TextureToolkit]\n"
              << "; Virtual Key Code for UI Toggle (0x2D = INSERT, 0x24 = HOME, 0x74 = F5)\n"
              << "HotKey=" << ss.str() << "\n\n"
-             << "; Folder Locations (relative to the game's executable folder, or an absolute path)\n"
-             << "DumpDir=" << m_config.dump_dir.string() << "\n"
-             << "InjectDir=" << m_config.inject_dir.string() << "\n\n"
+             << "; Root folder for dump/, inject/, and imgui.ini.\n"
+             << "; Relative to the game's executable folder, or an absolute path.\n"
+             << "ResourceRoot=" << m_config.resource_root.string() << "\n\n"
              << "; Feature Toggles\n"
              << "EnableInjection=" << (m_config.enable_injection ? 1 : 0) << "\n"
              << "AutoDump=" << (m_config.auto_dump ? 1 : 0) << "\n"

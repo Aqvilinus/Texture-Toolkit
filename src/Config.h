@@ -9,8 +9,11 @@ namespace TextureToolkit
     struct Configuration
     {
         uint32_t hotkey = VK_INSERT; // Default: INSERT key (0x2D)
-        std::filesystem::path dump_dir = "TT/dump";
-        std::filesystem::path inject_dir = "TT/inject";
+
+        // Root folder for all of Texture Toolkit's runtime files (dump/, inject/, imgui.ini).
+        // Relative to the game's executable folder, or an absolute path. Rename or relocate
+        // this one value and everything moves together.
+        std::filesystem::path resource_root = "TT";
 
         bool enable_injection = true;
         bool auto_dump = false;

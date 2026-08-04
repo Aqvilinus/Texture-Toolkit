@@ -55,7 +55,7 @@ Match the build to the game: a 32-bit game needs the x86 build.
 2. Launch the game. Texture Toolkit writes `TextureToolkit.ini` and its log next to the `.asi`, and creates a `TT/` folder next to the executable containing `dump/`, `inject/`, and `imgui.ini`.
 3. Press `INSERT` to open the panel.
 
-To replace a texture, read its hash from the panel (or dump it first), edit the `.dds`, and place it in `TT/inject` named after the hash, for example `5D3E2CCE.dds` or `0x5D3E2CCE.dds`. Export it with a full mip chain if it is block-compressed.
+To replace a texture, read its hash from the panel (or dump it first), edit the `.dds`, and place it in `TT/inject` named after the hash, for example `5D3E2CCE.dds` or `0x5D3E2CCE.dds`. Export it with a full mip chain if it is block-compressed. The `TT` folder name can be changed with `ResourceRoot` in the ini.
 
 ## Configuration
 
@@ -64,8 +64,7 @@ To replace a texture, read its hash from the panel (or dump it first), edit the 
 ```ini
 [TextureToolkit]
 HotKey=0x2D
-DumpDir=TT/dump
-InjectDir=TT/inject
+ResourceRoot=TT
 EnableInjection=1
 AutoDump=0
 FilterSmallTextures=1
@@ -75,9 +74,9 @@ Verbose=0
 ```
 
 - `HotKey`: virtual-key code that toggles the panel (`0x2D` INSERT, `0x24` HOME, `0x74` F5).
-- `DumpDir` / `InjectDir`: relative to the game folder, or an absolute path.
-- `EnableInjection`: load replacements from `InjectDir`.
-- `AutoDump`: dump every texture to `DumpDir` as it loads.
+- `ResourceRoot`: folder holding `dump/`, `inject/`, and `imgui.ini`; relative to the game folder, or an absolute path.
+- `EnableInjection`: load replacements from the `inject/` folder.
+- `AutoDump`: dump every texture to the `dump/` folder as it loads.
 - `FilterSmallTextures`: ignore textures under 16x16.
 - `ShowCurrentFrameOnly`: list only textures drawn in the current scene.
 - `ShowOSDBanner`: show the startup banner.
@@ -88,7 +87,7 @@ Toggling a checkbox in the panel writes its new value back to this file.
 ## Limitations
 
 - Direct3D 9 and Direct3D 11 only. DirectX 8, 10, 12, and Vulkan are not hooked.
-- A DirectX 8 game run through a `d3d8to9` wrapper renders as Direct3D 9, so the overlay appears, but its textures stay invisible. The wrapper feeds pixel data into the D3D9 textures through an internal path that never calls a `LockRect`, `UpdateSurface`, `UpdateTexture`, or `StretchRect` we can hook, so there is nothing to hash. Capturing those would require hooking Direct3D 8 directly, which is not implemented. Mafia: The City of Lost Heaven (via the `UseD3D8to9` loader) behaves this way; with `Verbose=1` the log fills with `Hooked_CreateTexture` lines and never a `Tracked` line.
+- A DirectX 8 game run through a `d3d8to9` wrapper renders as Direct3D 9, so the overlay appears, but its textures stay invisible. The wrapper feeds pixel data into the D3D9 textures through an internal path that never calls a `LockRect`, `UpdateSurface`, `UpdateTexture`, or `StretchRect` we can hook, so there is nothing to hash. Capturing those would require hooking Direct3D 8 directly, which is not implemented. With `Verbose=1` the log fills with `Hooked_CreateTexture` lines and never a `Tracked` line.
 - Injection reads `.dds` only. Dumps are written as `.dds`.
 - A D3D9 texture in the default pool cannot be read back with `LockRect`, so the panel's Dump button fails on those; Auto-dump captures them from the upload instead.
 - A compressed replacement without a full mip chain samples its top level at every distance, which aliases in motion. The missing mips cannot be regenerated from compressed data, so export those with mipmaps.
