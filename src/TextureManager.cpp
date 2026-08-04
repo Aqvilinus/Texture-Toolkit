@@ -1303,10 +1303,14 @@ namespace TextureToolkit
             staging.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
             staging.MiscFlags = 0;
 
+            // Keep the re-entrancy guard set across the whole readback. Our staging
+            // CreateTexture2D/Map/Unmap all pass through our own hooks; without the guard
+            // Hooked_Unmap would re-enter register_unmap_texture11, which locks m_mutex -
+            // and request_dump already holds it on this thread, so that recursive lock is
+            // undefined behaviour (observed as a crash right after the .dds was written).
             ID3D11Texture2D *staging_tex = nullptr;
             D3D11Hook::s_inside_injection = true;
             HRESULT hr = device->CreateTexture2D(&staging, nullptr, &staging_tex);
-            D3D11Hook::s_inside_injection = false;
 
             if (SUCCEEDED(hr) && staging_tex != nullptr)
             {
@@ -1319,6 +1323,7 @@ namespace TextureToolkit
                 }
                 staging_tex->Release();
             }
+            D3D11Hook::s_inside_injection = false;
             tex2d->Release();
         }
         return path;

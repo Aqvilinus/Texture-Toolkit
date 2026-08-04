@@ -159,6 +159,20 @@ namespace TextureToolkit
 
         HookManager::get().create_hook(create_swapchain_addr, &Hooked_CreateSwapChain, reinterpret_cast<void **>(&m_orig_create_swapchain));
         Logger::get().info("[D3D11Hook] Intercepted IDXGIFactory::CreateSwapChain (VTable index 10).");
+
+        // Flip-model games (DXGI 1.2+, e.g. Deus Ex: Mankind Divided) create their swapchain
+        // through IDXGIFactory2::CreateSwapChainForHwnd and never touch CreateSwapChain, so we
+        // must hook that too or the Present hook is never installed and the overlay never shows.
+        IDXGIFactory2 *factory2 = nullptr;
+        if (SUCCEEDED(factory->QueryInterface(__uuidof(IDXGIFactory2), reinterpret_cast<void **>(&factory2))) && factory2 != nullptr)
+        {
+            void **factory2_vtable = *reinterpret_cast<void ***>(factory2);
+            void *create_for_hwnd_addr = factory2_vtable[15]; // IDXGIFactory2::CreateSwapChainForHwnd is index 15
+
+            HookManager::get().create_hook(create_for_hwnd_addr, &Hooked_CreateSwapChainForHwnd, reinterpret_cast<void **>(&m_orig_create_swapchain_for_hwnd));
+            Logger::get().info("[D3D11Hook] Intercepted IDXGIFactory2::CreateSwapChainForHwnd (VTable index 15).");
+            factory2->Release();
+        }
     }
 
     void D3D11Hook::shutdown()
@@ -496,6 +510,18 @@ namespace TextureToolkit
         return hr;
     }
 
+    HRESULT STDMETHODCALLTYPE D3D11Hook::Hooked_CreateSwapChainForHwnd(IDXGIFactory2 *factory, IUnknown *pDevice, HWND hWnd, const DXGI_SWAP_CHAIN_DESC1 *pDesc, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *pFullscreenDesc, IDXGIOutput *pRestrictToOutput, IDXGISwapChain1 **ppSwapChain)
+    {
+        Logger::get().info("[D3D11Hook] IDXGIFactory2::CreateSwapChainForHwnd was called by the game!");
+        HRESULT hr = get().m_orig_create_swapchain_for_hwnd(factory, pDevice, hWnd, pDesc, pFullscreenDesc, pRestrictToOutput, ppSwapChain);
+
+        if (SUCCEEDED(hr) && ppSwapChain != nullptr && *ppSwapChain != nullptr)
+        {
+            get().hook_swapchain(*ppSwapChain); // IDXGISwapChain1 derives from IDXGISwapChain
+        }
+        return hr;
+    }
+
     HRESULT STDMETHODCALLTYPE D3D11Hook::Hooked_Present(IDXGISwapChain *swapchain, UINT SyncInterval, UINT Flags)
     {
         get().m_swapchain = swapchain;
@@ -535,7 +561,8 @@ namespace TextureToolkit
     {
         HRESULT hr = get().m_orig_map(context, pResource, Subresource, MapType, MapFlags, pMappedResource);
 
-        if (SUCCEEDED(hr) && Subresource == 0 && pMappedResource != nullptr && pMappedResource->pData != nullptr)
+        // Skip our own staging Map during a dump/injection readback (see dump_resource11).
+        if (SUCCEEDED(hr) && !s_inside_injection && Subresource == 0 && pMappedResource != nullptr && pMappedResource->pData != nullptr)
         {
             static int s_logged_maps = 0;
             if (s_logged_maps < 20)
@@ -557,7 +584,7 @@ namespace TextureToolkit
 
     void STDMETHODCALLTYPE D3D11Hook::Hooked_Unmap(ID3D11DeviceContext *context, ID3D11Resource *pResource, UINT Subresource)
     {
-        if (Subresource == 0)
+        if (!s_inside_injection && Subresource == 0)
         {
             auto it = s_mapped_resources.find(pResource);
             if (it != s_mapped_resources.end())
