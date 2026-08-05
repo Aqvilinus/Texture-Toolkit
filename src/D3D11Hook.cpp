@@ -9,6 +9,7 @@
 #include "imgui_impl_win32.h"
 #include "imgui_impl_dx11.h"
 #include <vector>
+#include <thread>
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -115,8 +116,90 @@ namespace TextureToolkit
             }
         }
 
+        // Start the swapchain-Present watchdog on its own thread. It does nothing unless a D3D11
+        // game turns up whose swapchain we never hook the normal way, in which case it falls back
+        // to a throwaway swapchain to hook the shared Present slot (see bootstrap_dxgi_present).
+        // Deferred to a thread because creating a D3D11 device under the DllMain loader lock (this
+        // init runs from DLL_PROCESS_ATTACH) can deadlock; a thread started during DllMain does not
+        // run until the loader lock is released, which is what we want.
+        if (m_orig_create_device_and_swapchain != nullptr)
+            std::thread(&D3D11Hook::bootstrap_dxgi_present, this).detach();
+
         m_initialized = true;
         return true;
+    }
+
+    void D3D11Hook::bootstrap_dxgi_present()
+    {
+        // Gate: only fall back to a dummy device when the game is actually a D3D11 title whose
+        // own swapchain we never managed to hook. This keeps the common cases free of any extra
+        // device creation, which matters both for pure-D3D9 games (Bully, GTA IV never touch
+        // D3D11, so no device is ever made here) and for multi-overlay stacks (ReShade, Special K,
+        // Lossless Scaling) where an unnecessary startup device/swapchain risks ordering conflicts.
+        //   - m_orig_present set        -> the game's own swapchain got hooked; nothing to do.
+        //   - m_orig_create_texture2d   -> set by hook_device, i.e. the game created a D3D11 device.
+        for (int i = 0; i < 600; ++i) // ~60s budget for the game to start rendering
+        {
+            if (m_orig_present != nullptr)
+                return; // a real swapchain got hooked the normal way; no dummy needed
+            if (m_orig_create_texture2d != nullptr)
+            {
+                Sleep(2000); // D3D11 game: give its own swapchain a moment to hook first
+                break;
+            }
+            Sleep(100);
+        }
+
+        // Bail unless this is a D3D11 game still lacking a Present hook. A D3D9-only game never
+        // sets m_orig_create_texture2d, so it leaves here without ever creating a device.
+        if (m_orig_present != nullptr || m_orig_create_texture2d == nullptr)
+            return;
+
+        Logger::get().info("[D3D11Hook] No swapchain Present hooked yet; falling back to a bootstrap swapchain.");
+
+        WNDCLASSEXW wc = { sizeof(wc) };
+        wc.lpfnWndProc = DefWindowProcW;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.lpszClassName = L"TTBootstrapWnd";
+        RegisterClassExW(&wc);
+        HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"", WS_OVERLAPPEDWINDOW, 0, 0, 16, 16, nullptr, nullptr, wc.hInstance, nullptr);
+
+        DXGI_SWAP_CHAIN_DESC scd = {};
+        scd.BufferCount = 1;
+        scd.BufferDesc.Width = 16;
+        scd.BufferDesc.Height = 16;
+        scd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+        scd.OutputWindow = (hwnd != nullptr) ? hwnd : GetDesktopWindow();
+        scd.SampleDesc.Count = 1;
+        scd.Windowed = TRUE;
+        scd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+
+        IDXGISwapChain *sc = nullptr;
+        ID3D11Device *dev = nullptr;
+        ID3D11DeviceContext *ctx = nullptr;
+        D3D_FEATURE_LEVEL fl = {};
+
+        // Call the trampoline, not the hooked export, so this does not re-enter our own hook.
+        HRESULT hr = m_orig_create_device_and_swapchain(
+            nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION,
+            &scd, &sc, &dev, &fl, &ctx);
+
+        if (SUCCEEDED(hr) && sc != nullptr)
+        {
+            hook_swapchain(sc); // hooks Present on the shared vtable -> catches the game's swapchain
+            Logger::get().info("[D3D11Hook] Present hook installed via bootstrap swapchain.");
+        }
+        else
+        {
+            Logger::get().error("[D3D11Hook] Bootstrap swapchain creation failed (HRESULT " + std::to_string(hr) + "); overlay falls back to factory hooks.");
+        }
+
+        if (ctx != nullptr) ctx->Release();
+        if (dev != nullptr) dev->Release();
+        if (sc != nullptr) sc->Release();
+        if (hwnd != nullptr) DestroyWindow(hwnd);
+        UnregisterClassW(wc.lpszClassName, wc.hInstance);
     }
 
     void D3D11Hook::hook_swapchain(IDXGISwapChain *swapchain)

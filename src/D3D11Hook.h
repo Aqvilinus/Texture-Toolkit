@@ -21,6 +21,12 @@ namespace TextureToolkit
         void hook_device(ID3D11Device *device);
         void hook_dxgi_factory(IDXGIFactory *factory);
 
+        // Creates a throwaway swapchain to hook the shared IDXGISwapChain::Present vtable slot,
+        // so the game's Present is intercepted regardless of how/where it creates its swapchain
+        // (flip-model, a factory we never saw created, or a proxy dxgi.dll). Runs once, off the
+        // loader lock. See the .cpp for why this is more reliable than hooking factory creation.
+        void bootstrap_dxgi_present();
+
         ID3D11Device *get_device() const { return m_device; }
         ID3D11DeviceContext *get_context() const { return m_context; }
 
