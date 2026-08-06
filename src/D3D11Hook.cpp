@@ -10,6 +10,7 @@
 #include "imgui_impl_dx11.h"
 #include <vector>
 #include <thread>
+#include <cstdio>
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -417,14 +418,21 @@ namespace TextureToolkit
         }
         s_key_was_down = key_is_down;
 
-        // Proof-of-life: if the overlay is invisible in game but these lines appear, we are drawing
-        // frames into a surface that is not on screen rather than failing to run at all.
+        // Proof-of-life. If the overlay is invisible in game but these lines keep coming, we are
+        // drawing into a surface that is not on screen rather than failing to run. Logged on a
+        // few early frames so a short session still shows whether rendering is continuous.
         {
             static uint64_t s_frames = 0;
-            if (++s_frames == 1 || s_frames == 600)
+            ++s_frames;
+            if (s_frames == 1 || s_frames == 10 || s_frames == 100 || s_frames == 1000)
+            {
+                char vk[16] = "";
+                std::snprintf(vk, sizeof(vk), "0x%02X", toggle_key);
                 Logger::get().info("[D3D11Hook] Overlay render heartbeat: frame " + std::to_string(s_frames) +
-                                   ", hotkey vk=0x" + std::to_string(toggle_key) + ", foreground=" +
-                                   std::to_string(GetForegroundWindow() == m_hwnd ? 1 : 0));
+                                   ", hotkey vk=" + vk + ", foreground=" +
+                                   std::to_string(GetForegroundWindow() == m_hwnd ? 1 : 0) +
+                                   ", ui_visible=" + std::to_string(TextureToolkitUI::is_visible() ? 1 : 0));
+            }
         }
 
         TextureManager::get().on_frame();
@@ -630,20 +638,20 @@ namespace TextureToolkit
 
     HRESULT STDMETHODCALLTYPE D3D11Hook::Hooked_Present(IDXGISwapChain *swapchain, UINT SyncInterval, UINT Flags)
     {
-        // We render into the first swapchain that presents. If the game (or another overlay) also
-        // presents a different one, say so once: that is the signature of an overlay drawn onto a
-        // surface the player never sees.
+        // Note which swapchain is presenting, but do NOT skip rendering for it: a game can present
+        // more than one, and drawing into every one that presents is what makes the overlay land on
+        // the visible surface. (Binding to only the first one regressed Dead Rising 3.)
         if (get().m_imgui_initialized && swapchain != get().m_swapchain)
         {
             static bool s_warned = false;
             if (!s_warned)
             {
                 s_warned = true;
-                Logger::get().warn("[D3D11Hook] A second swapchain (0x" + std::to_string(reinterpret_cast<uintptr_t>(swapchain)) +
-                                   ") is presenting; the overlay is bound to 0x" + std::to_string(reinterpret_cast<uintptr_t>(get().m_swapchain)) +
-                                   ". If the panel is invisible, it is being drawn to the wrong surface.");
+                Logger::get().warn("[D3D11Hook] More than one swapchain is presenting (0x" +
+                                   std::to_string(reinterpret_cast<uintptr_t>(swapchain)) + " and 0x" +
+                                   std::to_string(reinterpret_cast<uintptr_t>(get().m_swapchain)) +
+                                   "); the overlay draws into each of them.");
             }
-            return get().m_orig_present(swapchain, SyncInterval, Flags);
         }
 
         get().m_swapchain = swapchain;

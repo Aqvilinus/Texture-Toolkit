@@ -559,6 +559,7 @@ namespace TextureToolkit
         if (m_frame_count % 300 == 0)
             evict_stale_textures();
 
+        process_pending_injections();
         process_readback_queue();
     }
 
@@ -592,9 +593,11 @@ namespace TextureToolkit
         release_replacements();
         m_injected_files.clear();
         m_failed_injections.clear(); // retry files that were bad last time; they may be fixed now
+        m_pending_injections.clear();
 
-        // Replacements are rebuilt lazily the next time each texture is drawn (see
-        // try_build_pending_replacement), so newly added DDS files apply without a restart.
+        // Replacements are rebuilt after the next time each texture is drawn (flagged by
+        // note_pending_injection, built by process_pending_injections), so newly added DDS
+        // files apply without a restart.
         for (auto &pair : m_tracked_textures)
         {
             pair.second.replacement_handle = 0;
@@ -699,11 +702,10 @@ namespace TextureToolkit
         auto it = m_d3d9_replacements.find(hash);
         if (it == m_d3d9_replacements.end())
         {
-            // Hot reload: a DDS added after this texture was uploaded has no replacement yet,
-            // and the game will not upload it again. Build it here, the first time the texture
-            // is drawn after a rescan. Failures are remembered so we do not retry every frame.
-            if (try_build_pending_replacement(hash, false))
-                it = m_d3d9_replacements.find(hash);
+            // Hot reload: a DDS added after this texture was uploaded has no replacement yet, and
+            // the game will not upload it again. Only flag it here; the build happens in on_frame,
+            // never inside this draw call (see process_pending_injections).
+            note_pending_injection(hash, false);
         }
         if (it != m_d3d9_replacements.end() && it->second != nullptr)
             return it->second;
@@ -711,29 +713,63 @@ namespace TextureToolkit
         return orig;
     }
 
-    // Builds a replacement on demand for a hash that has an inject file but no live replacement.
-    // Caller MUST hold m_mutex. Returns true when a replacement is now available.
-    bool TextureManager::try_build_pending_replacement(uint32_t hash, bool is_dx11)
+    // Flags a drawn texture that has an inject file but no live replacement yet. Cheap: this runs
+    // inside the game's draw call, so it only records the hash. Caller MUST hold m_mutex.
+    void TextureManager::note_pending_injection(uint32_t hash, bool is_dx11)
     {
+        if (!enable_injection)
+            return;
         if (m_failed_injections.find(hash) != m_failed_injections.end())
-            return false;
+            return;
+        if (m_injected_files.find(hash) == m_injected_files.end())
+            return;
 
-        auto fit = m_injected_files.find(hash);
-        if (fit == m_injected_files.end())
-            return false;
+        m_pending_injections[hash] = is_dx11;
+    }
 
-        auto tit = m_tracked_textures.find(hash);
-        if (tit == m_tracked_textures.end())
-            return false;
+    // Builds replacements flagged by note_pending_injection. Runs once per frame from on_frame,
+    // outside any draw call, and only a couple per frame: each one reads a DDS off disk and
+    // creates a GPU texture, which must never happen in the middle of the game's rendering.
+    // Caller MUST hold m_mutex.
+    void TextureManager::process_pending_injections()
+    {
+        if (m_pending_injections.empty())
+            return;
 
-        TextureDetails &details = tit->second;
-        bool ok = is_dx11
-            ? build_replacement11(D3D11Hook::get().get_device(), hash, fit->second, details.mip_levels, details)
-            : build_replacement9(D3D9Hook::get().get_device(), hash, fit->second, details.mip_levels, details);
+        int budget = 2;
+        while (!m_pending_injections.empty() && budget-- > 0)
+        {
+            auto pit = m_pending_injections.begin();
+            const uint32_t hash = pit->first;
+            const bool is_dx11 = pit->second;
+            m_pending_injections.erase(pit);
 
-        if (!ok)
-            m_failed_injections.insert(hash); // do not retry this file every frame
-        return ok;
+            auto fit = m_injected_files.find(hash);
+            auto tit = m_tracked_textures.find(hash);
+            if (fit == m_injected_files.end() || tit == m_tracked_textures.end())
+                continue;
+
+            const bool have = is_dx11
+                ? m_d3d11_replacements.find(hash) != m_d3d11_replacements.end()
+                : m_d3d9_replacements.find(hash) != m_d3d9_replacements.end();
+            if (have)
+                continue;
+
+            // No device yet is a "not now", not a "never": leave the flag off and let the next
+            // draw re-raise it, instead of blacklisting a file that was never actually tried.
+            ID3D11Device *dev11 = is_dx11 ? D3D11Hook::get().get_device() : nullptr;
+            IDirect3DDevice9 *dev9 = is_dx11 ? nullptr : D3D9Hook::get().get_device();
+            if (is_dx11 ? (dev11 == nullptr) : (dev9 == nullptr))
+                continue;
+
+            TextureDetails &details = tit->second;
+            const bool ok = is_dx11
+                ? build_replacement11(dev11, hash, fit->second, details.mip_levels, details)
+                : build_replacement9(dev9, hash, fit->second, details.mip_levels, details);
+
+            if (!ok)
+                m_failed_injections.insert(hash); // do not retry a broken file every frame
+        }
     }
 
     static DXGI_FORMAT d3d9_format_to_dxgi(D3DFORMAT format)
@@ -1076,8 +1112,7 @@ namespace TextureToolkit
         if (it == m_d3d11_replacements.end())
         {
             // Hot reload: see the D3D9 path in get_replacement_texture9.
-            if (try_build_pending_replacement(hash, true))
-                it = m_d3d11_replacements.find(hash);
+            note_pending_injection(hash, true);
         }
         if (it != m_d3d11_replacements.end() && it->second != nullptr)
             return it->second;
