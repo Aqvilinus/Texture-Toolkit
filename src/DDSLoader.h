@@ -20,6 +20,9 @@ namespace TextureToolkit
         std::vector<std::vector<uint8_t>> subresources;
         std::vector<uint32_t> row_pitches;
         std::vector<uint32_t> slice_pitches;
+
+        // Set when load_dds fails, describing why. Logged by the caller.
+        std::string load_error;
     };
 
     bool load_dds(const std::string &filepath, DDSImage &out_image);

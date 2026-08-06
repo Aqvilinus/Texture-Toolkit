@@ -591,6 +591,19 @@ namespace TextureToolkit
         std::lock_guard<std::mutex> lock(m_mutex);
         release_replacements();
         m_injected_files.clear();
+        m_failed_injections.clear(); // retry files that were bad last time; they may be fixed now
+
+        // Replacements are rebuilt lazily the next time each texture is drawn (see
+        // try_build_pending_replacement), so newly added DDS files apply without a restart.
+        for (auto &pair : m_tracked_textures)
+        {
+            pair.second.replacement_handle = 0;
+            pair.second.repl_width = 0;
+            pair.second.repl_height = 0;
+            pair.second.filepath_injected.clear();
+            if (pair.second.status == TextureStatus::INJECTED)
+                pair.second.status = TextureStatus::ORIGINAL;
+        }
 
         if (!std::filesystem::exists(m_inject_dir))
             return;
@@ -684,10 +697,43 @@ namespace TextureToolkit
             return orig;
 
         auto it = m_d3d9_replacements.find(hash);
+        if (it == m_d3d9_replacements.end())
+        {
+            // Hot reload: a DDS added after this texture was uploaded has no replacement yet,
+            // and the game will not upload it again. Build it here, the first time the texture
+            // is drawn after a rescan. Failures are remembered so we do not retry every frame.
+            if (try_build_pending_replacement(hash, false))
+                it = m_d3d9_replacements.find(hash);
+        }
         if (it != m_d3d9_replacements.end() && it->second != nullptr)
             return it->second;
 
         return orig;
+    }
+
+    // Builds a replacement on demand for a hash that has an inject file but no live replacement.
+    // Caller MUST hold m_mutex. Returns true when a replacement is now available.
+    bool TextureManager::try_build_pending_replacement(uint32_t hash, bool is_dx11)
+    {
+        if (m_failed_injections.find(hash) != m_failed_injections.end())
+            return false;
+
+        auto fit = m_injected_files.find(hash);
+        if (fit == m_injected_files.end())
+            return false;
+
+        auto tit = m_tracked_textures.find(hash);
+        if (tit == m_tracked_textures.end())
+            return false;
+
+        TextureDetails &details = tit->second;
+        bool ok = is_dx11
+            ? build_replacement11(D3D11Hook::get().get_device(), hash, fit->second, details.mip_levels, details)
+            : build_replacement9(D3D9Hook::get().get_device(), hash, fit->second, details.mip_levels, details);
+
+        if (!ok)
+            m_failed_injections.insert(hash); // do not retry this file every frame
+        return ok;
     }
 
     static DXGI_FORMAT d3d9_format_to_dxgi(D3DFORMAT format)
@@ -823,6 +869,33 @@ namespace TextureToolkit
         if (enable_injection && !inject_path.empty() &&
             m_d3d9_replacements.find(hash) == m_d3d9_replacements.end())
         {
+            build_replacement9(device, hash, inject_path, original_levels, details);
+        }
+
+        m_tracked_textures[hash] = details;
+        Logger::get().debug("[TextureManager] Tracked D3D9 texture: 0x" + details.hash_hex + " (" + std::to_string(width) + "x" + std::to_string(height) + ")");
+
+        if (auto_dump)
+        {
+            DXGI_FORMAT dxgi_fmt = d3d9_format_to_dxgi(format);
+            if (dxgi_fmt != DXGI_FORMAT_UNKNOWN)
+            {
+                dump_texture(hash, width, height, dxgi_fmt, pixel_data, pitch);
+                m_tracked_textures[hash].status = TextureStatus::DUMPED;
+            }
+        }
+    }
+
+    // Builds the DX9 replacement for one hash and stores it in m_d3d9_replacements.
+    // original_levels is the original texture's level count. Caller MUST hold m_mutex.
+    // Returns true when a replacement was created.
+    bool TextureManager::build_replacement9(IDirect3DDevice9 *device, uint32_t hash, const std::filesystem::path &inject_path, UINT original_levels, TextureDetails &details)
+    {
+        if (device == nullptr)
+            return false;
+
+        bool created = false;
+        {
             DDSImage dds;
             if (load_dds(inject_path.string(), dds) && !dds.subresources.empty())
             {
@@ -909,6 +982,7 @@ namespace TextureToolkit
                                 details.replacement_handle = reinterpret_cast<uint64_t>(highres_tex);
                                 details.repl_width = dds.width;
                                 details.repl_height = dds.height;
+                                created = true;
 
                                 Logger::get().info("[TextureManager] Loaded high-res DX9 replacement for 0x" + format_hash_hex(hash) + " (" + std::to_string(dds.width) + "x" + std::to_string(dds.height) + ", " + std::to_string(mips.size()) + " mips, original had " + std::to_string(original_levels) + ")");
                             }
@@ -932,22 +1006,11 @@ namespace TextureToolkit
             }
             else
             {
-                Logger::get().error("[TextureManager] Failed to load injected DDS file " + inject_path.string());
+                Logger::get().error("[TextureManager] Failed to load injected DDS file " + inject_path.string() +
+                                    (dds.load_error.empty() ? "" : " - " + dds.load_error));
             }
         }
-
-        m_tracked_textures[hash] = details;
-        Logger::get().debug("[TextureManager] Tracked D3D9 texture: 0x" + details.hash_hex + " (" + std::to_string(width) + "x" + std::to_string(height) + ")");
-
-        if (auto_dump)
-        {
-            DXGI_FORMAT dxgi_fmt = d3d9_format_to_dxgi(format);
-            if (dxgi_fmt != DXGI_FORMAT_UNKNOWN)
-            {
-                dump_texture(hash, width, height, dxgi_fmt, pixel_data, pitch);
-                m_tracked_textures[hash].status = TextureStatus::DUMPED;
-            }
-        }
+        return created;
     }
 
     ID3D11ShaderResourceView *TextureManager::get_replacement_srv11(ID3D11ShaderResourceView *orig)
@@ -1010,6 +1073,12 @@ namespace TextureToolkit
             return orig;
 
         auto it = m_d3d11_replacements.find(hash);
+        if (it == m_d3d11_replacements.end())
+        {
+            // Hot reload: see the D3D9 path in get_replacement_texture9.
+            if (try_build_pending_replacement(hash, true))
+                it = m_d3d11_replacements.find(hash);
+        }
         if (it != m_d3d11_replacements.end() && it->second != nullptr)
             return it->second;
 
@@ -1073,6 +1142,28 @@ namespace TextureToolkit
         std::filesystem::path inject_path = find_injection_path(hash);
         if (enable_injection && !inject_path.empty() &&
             m_d3d11_replacements.find(hash) == m_d3d11_replacements.end())
+        {
+            build_replacement11(device, hash, inject_path, original_levels, details);
+        }
+
+        m_tracked_textures[hash] = details;
+
+        if (auto_dump)
+        {
+            dump_texture(hash, width, height, format, pixel_data, pitch);
+            m_tracked_textures[hash].status = TextureStatus::DUMPED;
+        }
+    }
+
+    // Builds the DX11 replacement for one hash and stores it in m_d3d11_replacements.
+    // original_levels is the original texture's MipLevels (0 = runtime-generated full chain).
+    // Caller MUST hold m_mutex. Returns true when a replacement was created.
+    bool TextureManager::build_replacement11(ID3D11Device *device, uint32_t hash, const std::filesystem::path &inject_path, UINT original_levels, TextureDetails &details)
+    {
+        if (device == nullptr)
+            return false;
+
+        bool created = false;
         {
             DDSImage dds;
             if (load_dds(inject_path.string(), dds) && !dds.subresources.empty())
@@ -1142,6 +1233,7 @@ namespace TextureToolkit
                             details.replacement_handle = reinterpret_cast<uint64_t>(highres_srv);
                             details.repl_width = dds.width;
                             details.repl_height = dds.height;
+                            created = true;
 
                             Logger::get().info("[TextureManager] Loaded DX11 replacement for 0x" + format_hash_hex(hash) + " (" + std::to_string(dds.width) + "x" + std::to_string(dds.height) + ", " + std::to_string(mips.size()) + " mips, original had " + std::to_string(original_levels) + ")");
                         }
@@ -1155,17 +1247,11 @@ namespace TextureToolkit
             }
             else
             {
-                Logger::get().error("[TextureManager] Failed to load injected DDS file " + inject_path.string());
+                Logger::get().error("[TextureManager] Failed to load injected DDS file " + inject_path.string() +
+                                    (dds.load_error.empty() ? "" : " - " + dds.load_error));
             }
         }
-
-        m_tracked_textures[hash] = details;
-
-        if (auto_dump)
-        {
-            dump_texture(hash, width, height, format, pixel_data, pitch);
-            m_tracked_textures[hash].status = TextureStatus::DUMPED;
-        }
+        return created;
     }
 
     std::vector<TextureDetails> TextureManager::get_active_textures()

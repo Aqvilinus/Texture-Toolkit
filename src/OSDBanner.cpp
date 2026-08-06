@@ -20,6 +20,7 @@ namespace TextureToolkit
     void OSDBanner::reset()
     {
         m_start_time = std::chrono::steady_clock::now();
+        m_started = false; // (re)armed; the clock starts on the first drawn frame
         m_active = true;
     }
 
@@ -28,6 +29,15 @@ namespace TextureToolkit
         const auto &config = ConfigManager::get().get_config();
         if (!config.show_osd_banner || !m_active)
             return;
+
+        // Start the countdown on the first frame we actually draw, not at DLL init. A game can
+        // spend a long time loading before it presents (Deus Ex: Mankind Divided takes ~21s), and
+        // timing from init meant the banner had already expired before the overlay existed.
+        if (!m_started)
+        {
+            m_started = true;
+            m_start_time = std::chrono::steady_clock::now();
+        }
 
         auto now = std::chrono::steady_clock::now();
         float elapsed = std::chrono::duration<float>(now - m_start_time).count();

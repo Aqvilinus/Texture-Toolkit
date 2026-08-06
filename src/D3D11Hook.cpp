@@ -380,6 +380,19 @@ namespace TextureToolkit
 
         m_imgui_initialized = true;
         Logger::get().info("[D3D11Hook] Dear ImGui initialized natively for real game DirectX 11 device.");
+
+        // Which surface the overlay bound to. If a game presents from more than one swapchain we
+        // bind to the first one that presents, which may not be the one on screen; these lines
+        // (plus the "different swapchain" warning below) are what identifies that case in a log.
+        RECT cr = {};
+        if (m_hwnd != nullptr)
+            GetClientRect(m_hwnd, &cr);
+        Logger::get().info("[D3D11Hook] Overlay bound to swapchain 0x" + std::to_string(reinterpret_cast<uintptr_t>(swapchain)) +
+                           " hwnd 0x" + std::to_string(reinterpret_cast<uintptr_t>(m_hwnd)) +
+                           " backbuffer " + std::to_string(desc.BufferDesc.Width) + "x" + std::to_string(desc.BufferDesc.Height) +
+                           " client " + std::to_string(cr.right - cr.left) + "x" + std::to_string(cr.bottom - cr.top) +
+                           " windowed=" + std::to_string(desc.Windowed ? 1 : 0) +
+                           " swapeffect=" + std::to_string(static_cast<int>(desc.SwapEffect)));
     }
 
     void D3D11Hook::render_imgui(IDXGISwapChain *swapchain)
@@ -403,6 +416,16 @@ namespace TextureToolkit
             // Cursor visibility is handled per-frame by feed_overlay_mouse (software cursor).
         }
         s_key_was_down = key_is_down;
+
+        // Proof-of-life: if the overlay is invisible in game but these lines appear, we are drawing
+        // frames into a surface that is not on screen rather than failing to run at all.
+        {
+            static uint64_t s_frames = 0;
+            if (++s_frames == 1 || s_frames == 600)
+                Logger::get().info("[D3D11Hook] Overlay render heartbeat: frame " + std::to_string(s_frames) +
+                                   ", hotkey vk=0x" + std::to_string(toggle_key) + ", foreground=" +
+                                   std::to_string(GetForegroundWindow() == m_hwnd ? 1 : 0));
+        }
 
         TextureManager::get().on_frame();
 
@@ -607,6 +630,22 @@ namespace TextureToolkit
 
     HRESULT STDMETHODCALLTYPE D3D11Hook::Hooked_Present(IDXGISwapChain *swapchain, UINT SyncInterval, UINT Flags)
     {
+        // We render into the first swapchain that presents. If the game (or another overlay) also
+        // presents a different one, say so once: that is the signature of an overlay drawn onto a
+        // surface the player never sees.
+        if (get().m_imgui_initialized && swapchain != get().m_swapchain)
+        {
+            static bool s_warned = false;
+            if (!s_warned)
+            {
+                s_warned = true;
+                Logger::get().warn("[D3D11Hook] A second swapchain (0x" + std::to_string(reinterpret_cast<uintptr_t>(swapchain)) +
+                                   ") is presenting; the overlay is bound to 0x" + std::to_string(reinterpret_cast<uintptr_t>(get().m_swapchain)) +
+                                   ". If the panel is invisible, it is being drawn to the wrong surface.");
+            }
+            return get().m_orig_present(swapchain, SyncInterval, Flags);
+        }
+
         get().m_swapchain = swapchain;
         get().render_imgui(swapchain);
         return get().m_orig_present(swapchain, SyncInterval, Flags);

@@ -148,6 +148,18 @@ namespace TextureToolkit
 
         void release_replacements();
 
+        // Replacement construction. Split out of the register_unmap_* paths so a replacement can
+        // also be built later, on demand, when a DDS is added while the game is running (the
+        // texture is never re-uploaded, so hot reload has to build it at bind time instead).
+        // All three require the caller to hold m_mutex.
+        bool build_replacement9(IDirect3DDevice9 *device, uint32_t hash, const std::filesystem::path &inject_path, UINT original_levels, TextureDetails &details);
+        bool build_replacement11(ID3D11Device *device, uint32_t hash, const std::filesystem::path &inject_path, UINT original_levels, TextureDetails &details);
+        bool try_build_pending_replacement(uint32_t hash, bool is_dx11);
+
+        // Hashes whose inject file failed to load/create, so the bind-time hot-reload path does
+        // not retry a broken file on every draw. Cleared by rescan_injected.
+        std::unordered_set<uint32_t> m_failed_injections;
+
         // Live original-texture preview (see set_preview_target). We hold one COM reference.
         uint32_t m_preview_target_hash = 0;
         IDirect3DBaseTexture9 *m_preview_tex9 = nullptr;

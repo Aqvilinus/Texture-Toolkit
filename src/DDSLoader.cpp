@@ -174,7 +174,19 @@ namespace TextureToolkit
             {
                 file.read(reinterpret_cast<char *>(buffer.data()), slice_pitch);
                 if (file.gcount() < static_cast<std::streamsize>(slice_pitch))
+                {
+                    // Short read. On mip 0 this means the file does not match its own header (a
+                    // format we mapped wrongly, or truncated data) and the load fails outright, so
+                    // record what we expected: the numbers identify which of the two it was.
+                    if (mip == 0)
+                        out_image.load_error = "mip 0 short read: expected " + std::to_string(slice_pitch) +
+                                               " bytes, got " + std::to_string(static_cast<long long>(file.gcount())) +
+                                               " (" + std::to_string(out_image.width) + "x" + std::to_string(out_image.height) +
+                                               ", format " + std::to_string(static_cast<uint32_t>(fmt)) +
+                                               ", fourcc 0x" + std::to_string(header.ddspf.dwFourCC) +
+                                               ", bitcount " + std::to_string(header.ddspf.dwRGBBitCount) + ")";
                     break;
+                }
             }
 
             out_image.subresources.push_back(std::move(buffer));
