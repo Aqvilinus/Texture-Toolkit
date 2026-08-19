@@ -574,6 +574,22 @@ namespace TextureToolkit
                 D3DSURFACE_DESC desc = {};
                 if (SUCCEEDED(surface->GetDesc(&desc)))
                 {
+                    // Only the top level identifies the texture. A game uploads its mip chain one
+                    // surface at a time (GetSurfaceLevel(n) -> LockRect), and every one of those
+                    // arrives here with the SAME parent texture, so without this check each mip is
+                    // registered as its own texture AND the last (smallest) one wins the private-data
+                    // hash tag. Bind-time lookup then searches for the 16x16 mip's hash and misses
+                    // the replacement built for mip 0 -- injection silently did nothing on every
+                    // mipmapped texture. Mip levels always differ in size, so comparing against
+                    // level 0 identifies the top level exactly.
+                    D3DSURFACE_DESC level0 = {};
+                    if (FAILED(texture->GetLevelDesc(0, &level0)) ||
+                        desc.Width != level0.Width || desc.Height != level0.Height)
+                    {
+                        texture->Release();
+                        return hr;
+                    }
+
                     static int s_logged_surf_locks = 0;
                     if (s_logged_surf_locks < 20)
                     {
