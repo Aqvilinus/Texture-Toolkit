@@ -331,7 +331,9 @@ namespace TextureToolkit
                             pDesc->Width,
                             pDesc->Height,
                             pDesc->Format,
-                            pInitialData->SysMemPitch
+                            pInitialData->SysMemPitch,
+                            pInitialData,
+                            pDesc->MipLevels
                         );
                     }
                 }

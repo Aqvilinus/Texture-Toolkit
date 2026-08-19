@@ -156,6 +156,29 @@ namespace TextureToolkit
         return levels;
     }
 
+    // Copies one mip level into a tightly-packed buffer, dropping any row padding the source had.
+    static void append_tight_level(std::vector<std::vector<uint8_t>> &out, const void *src, UINT src_pitch,
+                                   reshade::api::format fmt, bool compressed, UINT w, UINT h)
+    {
+        if (src == nullptr || w == 0 || h == 0)
+            return;
+
+        const UINT tight_row = reshade::api::format_row_pitch(fmt, w);
+        const UINT rows = compressed ? ((h + 3) / 4) : h;
+        if (tight_row == 0 || rows == 0)
+            return;
+
+        if (src_pitch < tight_row)
+            src_pitch = tight_row;
+
+        std::vector<uint8_t> buf(static_cast<size_t>(tight_row) * rows);
+        const uint8_t *s = static_cast<const uint8_t *>(src);
+        for (UINT y = 0; y < rows; ++y)
+            std::memcpy(buf.data() + static_cast<size_t>(y) * tight_row,
+                        s + static_cast<size_t>(y) * src_pitch, tight_row);
+        out.push_back(std::move(buf));
+    }
+
     static uint64_t calculate_d3d9_pixel_hash(const void *pixel_data, UINT width, UINT height, D3DFORMAT format, UINT pitch)
     {
         if (pixel_data == nullptr || width == 0 || height == 0)
@@ -893,7 +916,12 @@ namespace TextureToolkit
             DXGI_FORMAT dxgi_fmt = d3d9_format_to_dxgi(format);
             if (dxgi_fmt != DXGI_FORMAT_UNKNOWN)
             {
-                dump_texture(hash, width, height, dxgi_fmt, pixel_data, pitch);
+                // Only level 0 exists at this moment: the game uploads mips one lock at a time,
+                // so the rest are not filled yet. Manual Dump reads the finished chain back.
+                std::vector<std::vector<uint8_t>> levels;
+                append_tight_level(levels, pixel_data, pitch, static_cast<reshade::api::format>(dxgi_fmt),
+                                   dxgi_format_is_compressed(dxgi_fmt), width, height);
+                dump_texture(hash, width, height, dxgi_fmt, std::move(levels));
                 m_tracked_textures[hash].status = TextureStatus::DUMPED;
             }
         }
@@ -1117,7 +1145,8 @@ namespace TextureToolkit
         return orig;
     }
 
-    void TextureManager::register_unmap_texture11(ID3D11Device *device, ID3D11Resource *resource, const void *pixel_data, UINT width, UINT height, DXGI_FORMAT format, UINT pitch)
+    void TextureManager::register_unmap_texture11(ID3D11Device *device, ID3D11Resource *resource, const void *pixel_data, UINT width, UINT height, DXGI_FORMAT format, UINT pitch,
+                                                  const D3D11_SUBRESOURCE_DATA *initial_levels, UINT initial_level_count)
     {
         if (device == nullptr || resource == nullptr || pixel_data == nullptr || width == 0 || height == 0)
             return;
@@ -1188,7 +1217,24 @@ namespace TextureToolkit
 
         if (auto_dump)
         {
-            dump_texture(hash, width, height, format, pixel_data, pitch);
+            // CreateTexture2D hands over every level at once, so auto-dump can capture the whole
+            // chain there. The Map/Unmap path only ever exposes one subresource, so it stays flat.
+            std::vector<std::vector<uint8_t>> levels;
+            if (initial_levels != nullptr && initial_level_count > 1)
+            {
+                for (UINT level = 0; level < initial_level_count; ++level)
+                {
+                    append_tight_level(levels, initial_levels[level].pSysMem, initial_levels[level].SysMemPitch,
+                                       reshade_fmt, dxgi_format_is_compressed(format),
+                                       (std::max)(1u, width >> level), (std::max)(1u, height >> level));
+                }
+            }
+            if (levels.empty())
+            {
+                append_tight_level(levels, pixel_data, pitch, reshade_fmt,
+                                   dxgi_format_is_compressed(format), width, height);
+            }
+            dump_texture(hash, width, height, format, std::move(levels));
             m_tracked_textures[hash].status = TextureStatus::DUMPED;
         }
     }
@@ -1330,22 +1376,17 @@ namespace TextureToolkit
         return st;
     }
 
-    bool TextureManager::dump_texture(uint64_t hash, UINT width, UINT height, DXGI_FORMAT format, const void *data, UINT row_pitch)
+    bool TextureManager::dump_texture(uint64_t hash, UINT width, UINT height, DXGI_FORMAT format, std::vector<std::vector<uint8_t>> levels)
     {
-        reshade::api::format reshade_fmt = static_cast<reshade::api::format>(format);
-        UINT slice_pitch = reshade::api::format_slice_pitch(reshade_fmt, row_pitch, height);
-        if (slice_pitch == 0)
-        {
-            slice_pitch = row_pitch * height;
-        }
+        if (levels.empty())
+            return false;
 
         DumpRequest req;
         req.hash = hash;
         req.width = width;
         req.height = height;
         req.format = format;
-        req.data.assign(static_cast<const uint8_t*>(data), static_cast<const uint8_t*>(data) + slice_pitch);
-        req.row_pitch = row_pitch;
+        req.levels = std::move(levels);
 
         {
             std::lock_guard<std::mutex> lock(m_dump_mutex);
@@ -1353,40 +1394,6 @@ namespace TextureToolkit
         }
         m_dump_cv.notify_one();
         return true;
-    }
-
-    std::string TextureManager::write_dump_dds(uint64_t hash, UINT width, UINT height, DXGI_FORMAT format, const void *data, UINT row_pitch)
-    {
-        if (data == nullptr || width == 0 || height == 0)
-            return {};
-
-        // Write a concrete format, not TYPELESS, so the .dds is viewable and re-injectable.
-        format = dxgi_concrete_format(format);
-
-        std::error_code ec;
-        std::filesystem::create_directories(m_dump_dir, ec);
-
-        std::filesystem::path dds_path = m_dump_dir / (format_hash_hex(hash) + ".dds");
-
-        reshade::api::format reshade_fmt = static_cast<reshade::api::format>(format);
-        UINT slice_pitch = reshade::api::format_slice_pitch(reshade_fmt, row_pitch, height);
-        if (slice_pitch == 0)
-            slice_pitch = row_pitch * height;
-
-        reshade::api::resource_desc desc;
-        desc.texture.width = width;
-        desc.texture.height = height;
-        desc.texture.levels = 1;
-        desc.texture.format = reshade_fmt;
-
-        reshade::api::subresource_data subres;
-        subres.data = const_cast<void *>(data); // save_dds only reads it
-        subres.row_pitch = row_pitch;
-        subres.slice_pitch = slice_pitch;
-
-        if (!save_dds(dds_path.string(), desc, subres))
-            return {};
-        return dds_path.string();
     }
 
     // Writes a full mip chain to TT/dump. `levels` holds tightly-packed pixel data for mip 0..n.
@@ -1447,7 +1454,7 @@ namespace TextureToolkit
                 m_dump_queue.erase(m_dump_queue.begin());
             }
 
-            std::string path = write_dump_dds(req.hash, req.width, req.height, req.format, req.data.data(), req.row_pitch);
+            std::string path = write_dump_dds_mips(req.hash, req.width, req.height, req.format, req.levels);
             if (!path.empty())
             {
                 std::lock_guard<std::mutex> lock(m_mutex);
@@ -1609,8 +1616,13 @@ namespace TextureToolkit
                         if (SUCCEEDED(dev->GetRenderTargetData(src, dst)) &&
                             SUCCEEDED(dst->LockRect(&lr2, nullptr, D3DLOCK_READONLY)))
                         {
-                            path = write_dump_dds(hash, sd.Width, sd.Height, dxgi, lr2.pBits, lr2.Pitch);
+                            // A render target has no mip chain to read back; dump its one level.
+                            std::vector<std::vector<uint8_t>> rt_level;
+                            append_tight_level(rt_level, lr2.pBits, lr2.Pitch,
+                                               static_cast<reshade::api::format>(dxgi),
+                                               dxgi_format_is_compressed(dxgi), sd.Width, sd.Height);
                             dst->UnlockRect();
+                            path = write_dump_dds_mips(hash, sd.Width, sd.Height, dxgi, rt_level);
                         }
                         dst->Release();
                     }

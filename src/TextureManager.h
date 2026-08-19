@@ -118,7 +118,11 @@ namespace TextureToolkit
 
         // Virtual Replacements for DX11
         ID3D11ShaderResourceView *get_replacement_srv11(ID3D11ShaderResourceView *orig);
-        void register_unmap_texture11(ID3D11Device *device, ID3D11Resource *resource, const void *pixel_data, UINT width, UINT height, DXGI_FORMAT format, UINT pitch);
+        // initial_levels/initial_level_count are the CreateTexture2D initial-data array when the
+        // game supplied one. That is the only moment the whole mip chain is visible at once, so it
+        // is the only path where auto-dump can capture more than the top level.
+        void register_unmap_texture11(ID3D11Device *device, ID3D11Resource *resource, const void *pixel_data, UINT width, UINT height, DXGI_FORMAT format, UINT pitch,
+                                      const D3D11_SUBRESOURCE_DATA *initial_levels = nullptr, UINT initial_level_count = 0);
 
         // Dumps a texture to TT/dump immediately (synchronously, on the calling thread) and
         // returns true on success. Reads back the live GPU resource: the pinned preview
@@ -130,8 +134,9 @@ namespace TextureToolkit
         // live handle, so it is safe against pointer reuse). Returns the number queued.
         size_t dump_all(bool scene_only);
 
-        // Queues an async dump from CPU pixel data already in hand (used by auto-dump).
-        bool dump_texture(uint64_t hash, UINT width, UINT height, DXGI_FORMAT format, const void *data, UINT row_pitch);
+        // Queues an async dump from CPU pixel data already in hand (used by auto-dump). `levels`
+        // holds tightly-packed data per mip level; most upload paths only ever expose level 0.
+        bool dump_texture(uint64_t hash, UINT width, UINT height, DXGI_FORMAT format, std::vector<std::vector<uint8_t>> levels);
 
     private:
         TextureManager() = default;
@@ -196,8 +201,7 @@ namespace TextureToolkit
             UINT width = 0;
             UINT height = 0;
             DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
-            std::vector<uint8_t> data;
-            UINT row_pitch = 0;
+            std::vector<std::vector<uint8_t>> levels; // tightly packed, level 0 first
         };
 
         std::vector<DumpRequest> m_dump_queue;
@@ -207,10 +211,6 @@ namespace TextureToolkit
         bool m_dump_thread_running = false;
 
         void dump_worker_loop();
-
-        // Writes a single-mip DDS to TT/dump from CPU pixel data. Returns the file path, or
-        // empty on failure. Does not touch tracked state; the caller updates status.
-        std::string write_dump_dds(uint64_t hash, UINT width, UINT height, DXGI_FORMAT format, const void *data, UINT row_pitch);
 
         // Writes a full mip chain (tightly-packed data per level), so a dump can be edited and
         // injected straight back without losing its mips.
