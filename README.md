@@ -6,7 +6,7 @@ Texture Toolkit dumps and replaces textures at runtime in 32-bit and 64-bit Dire
 
 ## How it works
 
-Texture Toolkit hooks the calls that create and upload textures: `LockRect`/`UnlockRect` on D3D9, and `Map`/`Unmap` plus `CreateTexture2D` on D3D11. When a texture's pixels are uploaded it computes a CRC32 over that data and writes the hash onto the resource as D3D private data. At draw time it reads the hash back from whatever texture the game binds (`SetTexture` on D3D9, `PSSetShaderResources` on D3D11); if a replacement exists for that hash, it substitutes it before the draw.
+Texture Toolkit hooks the calls that create and upload textures: `LockRect`/`UnlockRect` on D3D9, and `Map`/`Unmap` plus `CreateTexture2D` on D3D11. When a texture's pixels are uploaded it computes a 64-bit hash over that data and writes the hash onto the resource as D3D private data. At draw time it reads the hash back from whatever texture the game binds (`SetTexture` on D3D9, `PSSetShaderResources` on D3D11); if a replacement exists for that hash, it substitutes it before the draw.
 
 Storing the hash on the resource, instead of tracking raw pointers, keeps a replacement attached to the right texture after the driver frees an address and reuses it for something else. On D3D9 the tool also follows `UpdateTexture`, so art that the game loads into a `SYSTEMMEM` texture and copies into a `DEFAULT`-pool texture is matched by the copy the game actually renders.
 
@@ -15,8 +15,8 @@ Storing the hash on the resource, instead of tracking raw pointers, keeps a repl
 - Direct3D 9 and Direct3D 11, both x86 and x64.
 - DDS replacement: put `<hash>.dds` in `TT/inject` and it loads without a restart.
 - Mip handling: a replacement is created with the original texture's mip count. Missing mips are generated for uncompressed formats; a compressed replacement without a full chain loads at its top level and logs a warning.
-- Dumping to `TT/dump` as `.dds`: automatically on load, one at a time from the panel, or every tracked texture at once.
-- CRC32 content hashing, so two identical textures share one hash and one replacement.
+- Dumping to `TT/dump` as `.dds`, with the full mip chain: automatically on load, one at a time from the panel, or every tracked texture at once.
+- 64-bit content hashing, so two identical textures share one hash and one replacement. The hash covers the texture's tightly-packed rows, not the driver's row padding, so a hash means the same thing on every machine and an `inject` folder can be shared as a mod.
 - Input isolation and a software cursor, so the game stops reading the mouse and keyboard while the panel is open.
 
 ## The in-game panel
@@ -55,7 +55,7 @@ Match the build to the game: a 32-bit game needs the x86 build.
 2. Launch the game. Texture Toolkit writes `TextureToolkit.ini` and its log next to the `.asi`, and creates a `TT/` folder next to the executable containing `dump/`, `inject/`, and `imgui.ini`.
 3. Press `INSERT` to open the panel.
 
-To replace a texture, read its hash from the panel (or dump it first), edit the `.dds`, and place it in `TT/inject` named after the hash, for example `5D3E2CCE.dds` or `0x5D3E2CCE.dds`. Export it with a full mip chain if it is block-compressed. The `TT` folder name can be changed with `ResourceRoot` in the ini.
+To replace a texture, read its hash from the panel (or dump it first), edit the `.dds`, and place it in `TT/inject` named after the hash, for example `5D3E2CCE1A7740B2.dds` or `0x5D3E2CCE1A7740B2.dds`. Dumps are written with their full mip chain, so an edited dump can go straight back into `inject` unchanged; if you author a block-compressed replacement yourself, export it with mipmaps. The `TT` folder name can be changed with `ResourceRoot` in the ini.
 
 ## Configuration
 
