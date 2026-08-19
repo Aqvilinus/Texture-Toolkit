@@ -10,6 +10,9 @@ Texture Toolkit hooks the calls that create and upload textures: `LockRect`/`Unl
 
 Storing the hash on the resource, instead of tracking raw pointers, keeps a replacement attached to the right texture after the driver frees an address and reuses it for something else. On D3D9 the tool also follows `UpdateTexture`, so art that the game loads into a `SYSTEMMEM` texture and copies into a `DEFAULT`-pool texture is matched by the copy the game actually renders.
 
+> [!NOTE]
+> This project exists mainly for the purpose of being used with games that don't have native or community-developed texture modding tools, games that have limitations with texture modding, such as only fixed-resolution imports, or games that may have memory issues with direct game file texture modding. Games such as NFS: The Run and Bully: Scholarship had such limitations that inspired the creation of this tool.
+
 ## Features
 
 - Direct3D 9 and Direct3D 11, both x86 and x64.
