@@ -8,6 +8,7 @@
 #include <sstream>
 #include <iomanip>
 #include <algorithm>
+#include <cstring>
 
 namespace TextureToolkit
 {
@@ -155,34 +156,23 @@ namespace TextureToolkit
         return levels;
     }
 
-    static uint32_t calculate_d3d9_pixel_hash(const void *pixel_data, UINT width, UINT height, D3DFORMAT format, UINT pitch)
+    static uint64_t calculate_d3d9_pixel_hash(const void *pixel_data, UINT width, UINT height, D3DFORMAT format, UINT pitch)
     {
         if (pixel_data == nullptr || width == 0 || height == 0)
             return 0;
 
         const uint8_t *src = static_cast<const uint8_t *>(pixel_data);
 
-        // Check if format is DXT compressed
+        // Hash tight rows only, so the lock pitch the driver happened to hand us never reaches
+        // the hash (see TextureHash.h). Block-compressed formats step a row of 4-pixel blocks.
         if (format == D3DFMT_DXT1 || format == D3DFMT_DXT2 || format == D3DFMT_DXT3 || format == D3DFMT_DXT4 || format == D3DFMT_DXT5)
         {
-            UINT block_size = (format == D3DFMT_DXT1) ? 8 : 16;
-            UINT blocks_x = (width + 3) / 4;
-            UINT blocks_y = (height + 3) / 4;
-            UINT row_bytes = blocks_x * block_size;
-
-            std::vector<uint8_t> clean_buffer;
-            clean_buffer.reserve(row_bytes * blocks_y);
-
-            for (UINT y = 0; y < blocks_y; ++y)
-            {
-                const uint8_t *row_src = src + y * pitch;
-                clean_buffer.insert(clean_buffer.end(), row_src, row_src + row_bytes);
-            }
-
-            return compute_crc32(clean_buffer.data(), clean_buffer.size());
+            const UINT block_size = (format == D3DFMT_DXT1) ? 8 : 16;
+            const UINT tight_row = ((width + 3) / 4) * block_size;
+            const UINT rows = (height + 3) / 4;
+            return compute_hash64_rows(src, pitch, tight_row, rows);
         }
 
-        // Uncompressed Formats: calculate bytes per pixel
         UINT bpp = 4; // Default 32-bit RGBA/ARGB
         if (format == D3DFMT_R5G6B5 || format == D3DFMT_X1R5G5B5 || format == D3DFMT_A1R5G5B5 || format == D3DFMT_A4R4G4B4 || format == D3DFMT_L16)
         {
@@ -193,22 +183,7 @@ namespace TextureToolkit
             bpp = 1;
         }
 
-        UINT row_bytes = width * bpp;
-        if (pitch == row_bytes || pitch == 0)
-        {
-            return compute_crc32(src, static_cast<size_t>(pitch > 0 ? pitch : row_bytes) * height);
-        }
-
-        std::vector<uint8_t> clean_buffer;
-        clean_buffer.reserve(row_bytes * height);
-
-        for (UINT y = 0; y < height; ++y)
-        {
-            const uint8_t *row_src = src + y * pitch;
-            clean_buffer.insert(clean_buffer.end(), row_src, row_src + row_bytes);
-        }
-
-        return compute_crc32(clean_buffer.data(), clean_buffer.size());
+        return compute_hash64_rows(src, pitch, width * bpp, height);
     }
 
     // Human-readable DXGI_FORMAT name. Covers the formats games actually ship textures in;
@@ -366,7 +341,7 @@ namespace TextureToolkit
         m_readback_queue.clear();
     }
 
-    void TextureManager::set_preview_target(uint32_t hash)
+    void TextureManager::set_preview_target(uint64_t hash)
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         if (hash == m_preview_target_hash)
@@ -411,7 +386,7 @@ namespace TextureToolkit
         m_file_preview_hash = 0;
     }
 
-    uint64_t TextureManager::get_file_preview_handle(uint32_t hash, const std::string &dds_path, bool is_dx11)
+    uint64_t TextureManager::get_file_preview_handle(uint64_t hash, const std::string &dds_path, bool is_dx11)
     {
         std::lock_guard<std::mutex> lock(m_mutex);
 
@@ -548,7 +523,7 @@ namespace TextureToolkit
         m_active_frame_hashes = m_current_frame_hashes;
         m_current_frame_hashes.clear();
 
-        for (uint32_t hash : m_active_frame_hashes)
+        for (uint64_t hash : m_active_frame_hashes)
         {
             auto it = m_tracked_textures.find(hash);
             if (it != m_tracked_textures.end())
@@ -629,7 +604,7 @@ namespace TextureToolkit
 
             try
             {
-                uint32_t hash = static_cast<uint32_t>(std::stoul(stem, nullptr, 16));
+                uint64_t hash = std::stoull(stem, nullptr, 16);
                 m_injected_files[hash] = entry.path();
             }
             catch (...)
@@ -641,7 +616,7 @@ namespace TextureToolkit
         Logger::get().info("[TextureManager] Scanned " + std::to_string(m_injected_files.size()) + " DDS replacement file(s) in TT/inject.");
     }
 
-    std::filesystem::path TextureManager::find_injection_path(uint32_t hash)
+    std::filesystem::path TextureManager::find_injection_path(uint64_t hash)
     {
         auto it = m_injected_files.find(hash);
         if (it != m_injected_files.end())
@@ -656,7 +631,7 @@ namespace TextureToolkit
         if (src == nullptr || dst == nullptr)
             return;
 
-        uint32_t hash = 0;
+        uint64_t hash = 0;
         DWORD size = sizeof(hash);
         if (SUCCEEDED(src->GetPrivateData(TT_HASH_GUID, &hash, &size)) && size == sizeof(hash))
             dst->SetPrivateData(TT_HASH_GUID, &hash, sizeof(hash), 0);
@@ -669,7 +644,7 @@ namespace TextureToolkit
 
         // Resolve the texture's content hash from its private-data tag. Untracked
         // textures carry no tag, so this fails fast for the common case.
-        uint32_t hash = 0;
+        uint64_t hash = 0;
         DWORD size = sizeof(hash);
         if (FAILED(orig->GetPrivateData(TT_HASH_GUID, &hash, &size)) || size != sizeof(hash))
             return orig;
@@ -696,7 +671,9 @@ namespace TextureToolkit
             }
         }
 
-        if (!enable_injection)
+        // Replacements are 2D textures. Never hand a cube or volume texture slot a 2D texture
+        // (mirrors the view-dimension guard on the D3D11 side).
+        if (!enable_injection || orig->GetType() != D3DRTYPE_TEXTURE)
             return orig;
 
         auto it = m_d3d9_replacements.find(hash);
@@ -715,7 +692,7 @@ namespace TextureToolkit
 
     // Flags a drawn texture that has an inject file but no live replacement yet. Cheap: this runs
     // inside the game's draw call, so it only records the hash. Caller MUST hold m_mutex.
-    void TextureManager::note_pending_injection(uint32_t hash, bool is_dx11)
+    void TextureManager::note_pending_injection(uint64_t hash, bool is_dx11)
     {
         if (!enable_injection)
             return;
@@ -740,7 +717,7 @@ namespace TextureToolkit
         while (!m_pending_injections.empty() && budget-- > 0)
         {
             auto pit = m_pending_injections.begin();
-            const uint32_t hash = pit->first;
+            const uint64_t hash = pit->first;
             const bool is_dx11 = pit->second;
             m_pending_injections.erase(pit);
 
@@ -865,7 +842,7 @@ namespace TextureToolkit
         if (filter_small_textures && (width < 16 || height < 16))
             return;
 
-        uint32_t hash = calculate_d3d9_pixel_hash(pixel_data, width, height, format, pitch);
+        uint64_t hash = calculate_d3d9_pixel_hash(pixel_data, width, height, format, pitch);
         if (hash == 0)
             return;
 
@@ -925,7 +902,7 @@ namespace TextureToolkit
     // Builds the DX9 replacement for one hash and stores it in m_d3d9_replacements.
     // original_levels is the original texture's level count. Caller MUST hold m_mutex.
     // Returns true when a replacement was created.
-    bool TextureManager::build_replacement9(IDirect3DDevice9 *device, uint32_t hash, const std::filesystem::path &inject_path, UINT original_levels, TextureDetails &details)
+    bool TextureManager::build_replacement9(IDirect3DDevice9 *device, uint64_t hash, const std::filesystem::path &inject_path, UINT original_levels, TextureDetails &details)
     {
         if (device == nullptr)
             return false;
@@ -949,9 +926,12 @@ namespace TextureToolkit
                     }
                     else
                     {
-                        if (original_levels > 1 && mips.size() < target_levels)
+                        // Warn only when the replacement has fewer levels than the ORIGINAL did.
+                        // Games commonly stop their chain at 4x4, so comparing against a
+                        // theoretical full chain would flag our own dumps as defective.
+                        if (original_levels > 1 && mips.size() < original_levels)
                         {
-                            Logger::get().error("[TextureManager] Injected DDS 0x" + format_hash_hex(hash) + " is missing mip levels (" + std::to_string(mips.size()) + "/" + std::to_string(target_levels) + "). Compressed replacements must ship a full mip chain; re-export with mipmaps to avoid shimmering at distance.");
+                            Logger::get().warn("[TextureManager] Injected DDS 0x" + format_hash_hex(hash) + " is missing mip levels (" + std::to_string(mips.size()) + "/" + std::to_string(original_levels) + "). Compressed replacements must ship a full mip chain; re-export with mipmaps to avoid shimmering at distance.");
                         }
 
                         IDirect3DTexture9 *highres_tex = nullptr;
@@ -1060,12 +1040,15 @@ namespace TextureToolkit
             return orig;
 
         // Resolve the content hash from the resource's private-data tag.
-        uint32_t hash = 0;
+        uint64_t hash = 0;
         UINT size = sizeof(hash);
         HRESULT hr = orig_res->GetPrivateData(TT_HASH_GUID, &size, &hash);
         orig_res->Release();
         if (FAILED(hr) || size != sizeof(hash))
             return orig;
+
+        D3D11_SHADER_RESOURCE_VIEW_DESC vd = {};
+        orig->GetDesc(&vd);
 
         std::lock_guard<std::mutex> lock(m_mutex);
         m_current_frame_hashes.insert(hash);
@@ -1074,15 +1057,29 @@ namespace TextureToolkit
         // once per texture; it reveals the sRGB intent that a TYPELESS resource hides.
         {
             auto tit = m_tracked_textures.find(hash);
-            if (tit != m_tracked_textures.end() && tit->second.view_format_id == 0)
+            if (tit != m_tracked_textures.end() && tit->second.view_format_id == 0 &&
+                vd.Format != DXGI_FORMAT_UNKNOWN)
             {
-                D3D11_SHADER_RESOURCE_VIEW_DESC vd = {};
-                orig->GetDesc(&vd);
-                if (vd.Format != DXGI_FORMAT_UNKNOWN)
-                {
-                    tit->second.view_format_id = static_cast<uint32_t>(vd.Format);
-                    tit->second.view_format_str = dxgi_format_name(vd.Format);
-                }
+                tit->second.view_format_id = static_cast<uint32_t>(vd.Format);
+                tit->second.view_format_str = dxgi_format_name(vd.Format);
+            }
+        }
+
+        // Our replacements are plain 2D views. If the game is sampling this content as an array,
+        // cube, 3D or multisampled view, handing its shader a TEXTURE2D SRV would feed the wrong
+        // resource type to the sampler: corrupt output or a dropped draw. Track it, but never
+        // substitute. (Costs nothing in the common case and only matters in untested games.)
+        const bool replaceable_view = (vd.ViewDimension == D3D11_SRV_DIMENSION_TEXTURE2D);
+        if (!replaceable_view)
+        {
+            static bool s_warned = false;
+            if (!s_warned)
+            {
+                s_warned = true;
+                Logger::get().warn("[TextureManager] Texture 0x" + format_hash_hex(hash) +
+                                   " is sampled through a non-2D view (dimension " +
+                                   std::to_string(static_cast<int>(vd.ViewDimension)) +
+                                   "); such textures are listed but not replaced.");
             }
         }
 
@@ -1105,7 +1102,7 @@ namespace TextureToolkit
             }
         }
 
-        if (!enable_injection)
+        if (!enable_injection || !replaceable_view)
             return orig;
 
         auto it = m_d3d11_replacements.find(hash);
@@ -1129,11 +1126,17 @@ namespace TextureToolkit
             return;
 
         reshade::api::format reshade_fmt = static_cast<reshade::api::format>(format);
-        UINT slice_pitch = reshade::api::format_slice_pitch(reshade_fmt, pitch, height);
-        if (slice_pitch == 0)
-            return;
 
-        uint32_t hash = compute_crc32(static_cast<const uint8_t *>(pixel_data), slice_pitch);
+        // Hash the tight rows, never the source pitch. On the Map/Unmap path that pitch is chosen
+        // by the driver (commonly padded to an alignment, and the padding itself can be
+        // uninitialised), so hashing it would make the same texture hash differently on another
+        // GPU and break every shared texture mod. See TextureHash.h.
+        const UINT tight_row = reshade::api::format_row_pitch(reshade_fmt, width);
+        if (tight_row == 0)
+            return;
+        const UINT rows = dxgi_format_is_compressed(format) ? ((height + 3) / 4) : height;
+
+        uint64_t hash = compute_hash64_rows(static_cast<const uint8_t *>(pixel_data), pitch, tight_row, rows);
         if (hash == 0)
             return;
 
@@ -1193,7 +1196,7 @@ namespace TextureToolkit
     // Builds the DX11 replacement for one hash and stores it in m_d3d11_replacements.
     // original_levels is the original texture's MipLevels (0 = runtime-generated full chain).
     // Caller MUST hold m_mutex. Returns true when a replacement was created.
-    bool TextureManager::build_replacement11(ID3D11Device *device, uint32_t hash, const std::filesystem::path &inject_path, UINT original_levels, TextureDetails &details)
+    bool TextureManager::build_replacement11(ID3D11Device *device, uint64_t hash, const std::filesystem::path &inject_path, UINT original_levels, TextureDetails &details)
     {
         if (device == nullptr)
             return false;
@@ -1214,9 +1217,14 @@ namespace TextureToolkit
                 }
                 else
                 {
-                    if (original_levels != 1 && mips.size() < target_levels)
+                    // See the D3D9 path: compare against the original's real level count.
+                    // original_levels == 0 means the runtime generates a full chain.
+                    const size_t orig_effective_levels = (original_levels == 0)
+                        ? full_mip_count(details.width, details.height)
+                        : original_levels;
+                    if (orig_effective_levels > 1 && mips.size() < orig_effective_levels)
                     {
-                        Logger::get().error("[TextureManager] Injected DDS 0x" + format_hash_hex(hash) + " is missing mip levels (" + std::to_string(mips.size()) + "/" + std::to_string(target_levels) + "). Compressed replacements must ship a full mip chain; re-export with mipmaps to avoid shimmering at distance.");
+                        Logger::get().warn("[TextureManager] Injected DDS 0x" + format_hash_hex(hash) + " is missing mip levels (" + std::to_string(mips.size()) + "/" + std::to_string(orig_effective_levels) + "). Compressed replacements must ship a full mip chain; re-export with mipmaps to avoid shimmering at distance.");
                     }
 
                     // Use a concrete (non-TYPELESS) format so the SRV is valid.
@@ -1312,7 +1320,7 @@ namespace TextureToolkit
         return result;
     }
 
-    bool TextureManager::dump_texture(uint32_t hash, UINT width, UINT height, DXGI_FORMAT format, const void *data, UINT row_pitch)
+    bool TextureManager::dump_texture(uint64_t hash, UINT width, UINT height, DXGI_FORMAT format, const void *data, UINT row_pitch)
     {
         reshade::api::format reshade_fmt = static_cast<reshade::api::format>(format);
         UINT slice_pitch = reshade::api::format_slice_pitch(reshade_fmt, row_pitch, height);
@@ -1337,7 +1345,7 @@ namespace TextureToolkit
         return true;
     }
 
-    std::string TextureManager::write_dump_dds(uint32_t hash, UINT width, UINT height, DXGI_FORMAT format, const void *data, UINT row_pitch)
+    std::string TextureManager::write_dump_dds(uint64_t hash, UINT width, UINT height, DXGI_FORMAT format, const void *data, UINT row_pitch)
     {
         if (data == nullptr || width == 0 || height == 0)
             return {};
@@ -1367,6 +1375,48 @@ namespace TextureToolkit
         subres.slice_pitch = slice_pitch;
 
         if (!save_dds(dds_path.string(), desc, subres))
+            return {};
+        return dds_path.string();
+    }
+
+    // Writes a full mip chain to TT/dump. `levels` holds tightly-packed pixel data for mip 0..n.
+    // Dumping every level is what lets a dump be edited and injected straight back: a compressed
+    // replacement without its mips cannot have them regenerated, and would alias in motion.
+    std::string TextureManager::write_dump_dds_mips(uint64_t hash, UINT width, UINT height, DXGI_FORMAT format,
+                                                    const std::vector<std::vector<uint8_t>> &levels)
+    {
+        if (levels.empty() || width == 0 || height == 0)
+            return {};
+
+        format = dxgi_concrete_format(format);
+        const reshade::api::format fmt = static_cast<reshade::api::format>(format);
+
+        std::error_code ec;
+        std::filesystem::create_directories(m_dump_dir, ec);
+        const std::filesystem::path dds_path = m_dump_dir / (format_hash_hex(hash) + ".dds");
+
+        std::vector<reshade::api::subresource_data> subres(levels.size());
+        for (size_t i = 0; i < levels.size(); ++i)
+        {
+            const UINT w = (std::max)(1u, width >> i);
+            const UINT h = (std::max)(1u, height >> i);
+            UINT row_pitch = reshade::api::format_row_pitch(fmt, w);
+            UINT slice_pitch = reshade::api::format_slice_pitch(fmt, row_pitch, h);
+            if (slice_pitch == 0)
+                slice_pitch = row_pitch * h;
+
+            subres[i].data = const_cast<uint8_t *>(levels[i].data()); // save_dds only reads it
+            subres[i].row_pitch = row_pitch;
+            subres[i].slice_pitch = slice_pitch;
+        }
+
+        reshade::api::resource_desc desc;
+        desc.texture.width = width;
+        desc.texture.height = height;
+        desc.texture.levels = static_cast<uint16_t>(levels.size());
+        desc.texture.format = fmt;
+
+        if (!save_dds_multi_mip(dds_path.string(), desc, subres))
             return {};
         return dds_path.string();
     }
@@ -1405,7 +1455,7 @@ namespace TextureToolkit
         }
     }
 
-    std::string TextureManager::dump_resource11(uint32_t hash, ID3D11Resource *res)
+    std::string TextureManager::dump_resource11(uint64_t hash, ID3D11Resource *res)
     {
         ID3D11Device *device = D3D11Hook::get().get_device();
         ID3D11DeviceContext *ctx = D3D11Hook::get().get_context();
@@ -1437,12 +1487,40 @@ namespace TextureToolkit
             if (SUCCEEDED(hr) && staging_tex != nullptr)
             {
                 ctx->CopyResource(staging_tex, tex2d);
-                D3D11_MAPPED_SUBRESOURCE mapped = {};
-                if (SUCCEEDED(ctx->Map(staging_tex, 0, D3D11_MAP_READ, 0, &mapped)) && mapped.pData != nullptr)
+
+                // Read back the whole mip chain, repacked to tight rows (the staging pitch is
+                // padded), so the .dds can be edited and injected back without losing its mips.
+                const reshade::api::format fmt = static_cast<reshade::api::format>(desc.Format);
+                const bool compressed = dxgi_format_is_compressed(desc.Format);
+                const UINT level_count = (desc.MipLevels > 0) ? desc.MipLevels : 1;
+
+                std::vector<std::vector<uint8_t>> levels;
+                levels.reserve(level_count);
+
+                for (UINT level = 0; level < level_count; ++level)
                 {
-                    path = write_dump_dds(hash, desc.Width, desc.Height, desc.Format, mapped.pData, mapped.RowPitch);
-                    ctx->Unmap(staging_tex, 0);
+                    const UINT w = (std::max)(1u, desc.Width >> level);
+                    const UINT h = (std::max)(1u, desc.Height >> level);
+                    const UINT tight_row = reshade::api::format_row_pitch(fmt, w);
+                    const UINT rows = compressed ? ((h + 3) / 4) : h;
+                    if (tight_row == 0 || rows == 0)
+                        break;
+
+                    D3D11_MAPPED_SUBRESOURCE mapped = {};
+                    if (FAILED(ctx->Map(staging_tex, level, D3D11_MAP_READ, 0, &mapped)) || mapped.pData == nullptr)
+                        break;
+
+                    std::vector<uint8_t> buf(static_cast<size_t>(tight_row) * rows);
+                    const uint8_t *src = static_cast<const uint8_t *>(mapped.pData);
+                    for (UINT y = 0; y < rows; ++y)
+                        std::memcpy(buf.data() + static_cast<size_t>(y) * tight_row,
+                                    src + static_cast<size_t>(y) * mapped.RowPitch, tight_row);
+                    ctx->Unmap(staging_tex, level);
+
+                    levels.push_back(std::move(buf));
                 }
+
+                path = write_dump_dds_mips(hash, desc.Width, desc.Height, desc.Format, levels);
                 staging_tex->Release();
             }
             D3D11Hook::s_inside_injection = false;
@@ -1451,7 +1529,7 @@ namespace TextureToolkit
         return path;
     }
 
-    std::string TextureManager::dump_base_texture9(uint32_t hash, IDirect3DBaseTexture9 *base)
+    std::string TextureManager::dump_base_texture9(uint64_t hash, IDirect3DBaseTexture9 *base)
     {
         if (base == nullptr)
             return {};
@@ -1471,10 +1549,41 @@ namespace TextureToolkit
             D3DLOCKED_RECT lr = {};
             if (dxgi != DXGI_FORMAT_UNKNOWN && SUCCEEDED(tex->LockRect(0, &lr, nullptr, D3DLOCK_READONLY)))
             {
-                // Lockable pool (managed / system memory / dynamic).
-                if (lr.pBits != nullptr)
-                    path = write_dump_dds(hash, sd.Width, sd.Height, dxgi, lr.pBits, lr.Pitch);
+                // Lockable pool (managed / system memory / dynamic). Read back the whole mip
+                // chain, tightly packed, so the dump can be injected back with its mips intact.
                 tex->UnlockRect(0);
+
+                const reshade::api::format fmt = static_cast<reshade::api::format>(dxgi);
+                const bool compressed = dxgi_format_is_compressed(dxgi);
+                const UINT level_count = tex->GetLevelCount();
+
+                std::vector<std::vector<uint8_t>> levels;
+                levels.reserve(level_count);
+
+                for (UINT level = 0; level < level_count; ++level)
+                {
+                    const UINT w = (std::max)(1u, sd.Width >> level);
+                    const UINT h = (std::max)(1u, sd.Height >> level);
+                    const UINT tight_row = reshade::api::format_row_pitch(fmt, w);
+                    const UINT rows = compressed ? ((h + 3) / 4) : h;
+                    if (tight_row == 0 || rows == 0)
+                        break;
+
+                    D3DLOCKED_RECT lrl = {};
+                    if (FAILED(tex->LockRect(level, &lrl, nullptr, D3DLOCK_READONLY)) || lrl.pBits == nullptr)
+                        break;
+
+                    std::vector<uint8_t> buf(static_cast<size_t>(tight_row) * rows);
+                    const uint8_t *src = static_cast<const uint8_t *>(lrl.pBits);
+                    for (UINT y = 0; y < rows; ++y)
+                        std::memcpy(buf.data() + static_cast<size_t>(y) * tight_row,
+                                    src + static_cast<size_t>(y) * lrl.Pitch, tight_row);
+                    tex->UnlockRect(level);
+
+                    levels.push_back(std::move(buf));
+                }
+
+                path = write_dump_dds_mips(hash, sd.Width, sd.Height, dxgi, levels);
             }
             else if (dxgi != DXGI_FORMAT_UNKNOWN && (sd.Usage & D3DUSAGE_RENDERTARGET))
             {
@@ -1506,7 +1615,7 @@ namespace TextureToolkit
         return path; // request_dump reports the failure with context
     }
 
-    bool TextureManager::request_dump(uint32_t hash)
+    bool TextureManager::request_dump(uint64_t hash)
     {
         std::lock_guard<std::mutex> lock(m_mutex);
 

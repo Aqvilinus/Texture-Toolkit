@@ -22,7 +22,7 @@ namespace TextureToolkit
 
     struct TextureDetails
     {
-        uint32_t hash = 0;
+        uint64_t hash = 0;
         std::string hash_hex;
 
         uint32_t width = 0;          // original game-texture dimensions
@@ -88,13 +88,13 @@ namespace TextureToolkit
         // game is using, so the preview stays valid even under pointer reuse and cannot be
         // freed while shown. At most one original is pinned at a time. Returns 0 until the
         // target is bound (i.e. visible in the scene).
-        void set_preview_target(uint32_t hash);
+        void set_preview_target(uint64_t hash);
         uint64_t get_original_preview_handle();
 
         // Loads a dumped .dds from disk into a GPU texture for preview and caches it (one
         // at a time, released when the selection changes). Lets us show textures that are
         // not currently on screen. Returns a native texture id, or 0 on failure.
-        uint64_t get_file_preview_handle(uint32_t hash, const std::string &dds_path, bool is_dx11);
+        uint64_t get_file_preview_handle(uint64_t hash, const std::string &dds_path, bool is_dx11);
 
         // Virtual Replacements for DX9
         IDirect3DBaseTexture9 *get_replacement_texture9(IDirect3DBaseTexture9 *orig);
@@ -112,7 +112,7 @@ namespace TextureToolkit
         // Dumps a texture to TT/dump immediately (synchronously, on the calling thread) and
         // returns true on success. Reads back the live GPU resource: the pinned preview
         // reference when the texture is the current selection, otherwise the tracked handle.
-        bool request_dump(uint32_t hash);
+        bool request_dump(uint64_t hash);
 
         // Queues a bulk dump. scene_only limits it to textures active this scene, otherwise
         // every tracked texture. Each is written the next time the game draws it (using the
@@ -120,7 +120,7 @@ namespace TextureToolkit
         size_t dump_all(bool scene_only);
 
         // Queues an async dump from CPU pixel data already in hand (used by auto-dump).
-        bool dump_texture(uint32_t hash, UINT width, UINT height, DXGI_FORMAT format, const void *data, UINT row_pitch);
+        bool dump_texture(uint64_t hash, UINT width, UINT height, DXGI_FORMAT format, const void *data, UINT row_pitch);
 
     private:
         TextureManager() = default;
@@ -133,46 +133,46 @@ namespace TextureToolkit
         uint64_t m_frame_count = 0;
 
         // Active-scene tracking is keyed by content hash (immune to driver pointer reuse).
-        std::unordered_set<uint32_t> m_current_frame_hashes;
-        std::unordered_set<uint32_t> m_active_frame_hashes;
-        std::unordered_map<uint32_t, std::filesystem::path> m_injected_files;
-        std::unordered_map<uint32_t, TextureDetails> m_tracked_textures;
+        std::unordered_set<uint64_t> m_current_frame_hashes;
+        std::unordered_set<uint64_t> m_active_frame_hashes;
+        std::unordered_map<uint64_t, std::filesystem::path> m_injected_files;
+        std::unordered_map<uint64_t, TextureDetails> m_tracked_textures;
 
         // Replacement maps are keyed by content hash, not by raw resource pointer.
         // The original resource is tagged with its hash via D3D private data
         // (TT_HASH_GUID), which the driver clears when the object is destroyed, so a
         // reused pointer can never inherit a stale replacement.
         // We own exactly one COM reference for each stored replacement.
-        std::unordered_map<uint32_t, IDirect3DBaseTexture9 *> m_d3d9_replacements;
-        std::unordered_map<uint32_t, ID3D11ShaderResourceView *> m_d3d11_replacements;
+        std::unordered_map<uint64_t, IDirect3DBaseTexture9 *> m_d3d9_replacements;
+        std::unordered_map<uint64_t, ID3D11ShaderResourceView *> m_d3d11_replacements;
 
         void release_replacements();
 
         // Replacement construction. Split out of the register_unmap_* paths so a replacement can
         // also be built later, when a DDS is added while the game is running (the texture is never
         // re-uploaded, so hot reload has to build it after the fact). Both require m_mutex.
-        bool build_replacement9(IDirect3DDevice9 *device, uint32_t hash, const std::filesystem::path &inject_path, UINT original_levels, TextureDetails &details);
-        bool build_replacement11(ID3D11Device *device, uint32_t hash, const std::filesystem::path &inject_path, UINT original_levels, TextureDetails &details);
+        bool build_replacement9(IDirect3DDevice9 *device, uint64_t hash, const std::filesystem::path &inject_path, UINT original_levels, TextureDetails &details);
+        bool build_replacement11(ID3D11Device *device, uint64_t hash, const std::filesystem::path &inject_path, UINT original_levels, TextureDetails &details);
 
         // Hot reload. The bind hooks only FLAG a hash (note_pending_injection, cheap, runs inside
         // the game's draw call); the actual DDS read and texture creation happen in on_frame via
         // process_pending_injections, a couple per frame. Both require m_mutex.
-        void note_pending_injection(uint32_t hash, bool is_dx11);
+        void note_pending_injection(uint64_t hash, bool is_dx11);
         void process_pending_injections();
 
-        std::unordered_map<uint32_t, bool> m_pending_injections; // hash -> is_dx11
+        std::unordered_map<uint64_t, bool> m_pending_injections; // hash -> is_dx11
 
         // Hashes whose inject file failed to load/create, so we do not retry a broken file every
         // frame. Cleared by rescan_injected.
-        std::unordered_set<uint32_t> m_failed_injections;
+        std::unordered_set<uint64_t> m_failed_injections;
 
         // Live original-texture preview (see set_preview_target). We hold one COM reference.
-        uint32_t m_preview_target_hash = 0;
+        uint64_t m_preview_target_hash = 0;
         IDirect3DBaseTexture9 *m_preview_tex9 = nullptr;
         ID3D11ShaderResourceView *m_preview_srv11 = nullptr;
 
         // Dumped-file preview, loaded on demand (see get_file_preview_handle).
-        uint32_t m_file_preview_hash = 0;
+        uint64_t m_file_preview_hash = 0;
         IDirect3DBaseTexture9 *m_file_preview_tex9 = nullptr;
         ID3D11ShaderResourceView *m_file_preview_srv11 = nullptr;
 
@@ -181,7 +181,7 @@ namespace TextureToolkit
         // Background dump worker
         struct DumpRequest
         {
-            uint32_t hash = 0;
+            uint64_t hash = 0;
             UINT width = 0;
             UINT height = 0;
             DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
@@ -199,22 +199,27 @@ namespace TextureToolkit
 
         // Writes a single-mip DDS to TT/dump from CPU pixel data. Returns the file path, or
         // empty on failure. Does not touch tracked state; the caller updates status.
-        std::string write_dump_dds(uint32_t hash, UINT width, UINT height, DXGI_FORMAT format, const void *data, UINT row_pitch);
+        std::string write_dump_dds(uint64_t hash, UINT width, UINT height, DXGI_FORMAT format, const void *data, UINT row_pitch);
+
+        // Writes a full mip chain (tightly-packed data per level), so a dump can be edited and
+        // injected straight back without losing its mips.
+        std::string write_dump_dds_mips(uint64_t hash, UINT width, UINT height, DXGI_FORMAT format,
+                                        const std::vector<std::vector<uint8_t>> &levels);
 
         // GPU readback + write for one live resource. Return the file path or empty.
-        std::string dump_resource11(uint32_t hash, ID3D11Resource *res);
-        std::string dump_base_texture9(uint32_t hash, IDirect3DBaseTexture9 *base);
+        std::string dump_resource11(uint64_t hash, ID3D11Resource *res);
+        std::string dump_base_texture9(uint64_t hash, IDirect3DBaseTexture9 *base);
 
         // Bulk-dump plumbing (see dump_all). m_pending_dumps holds hashes waiting to be
         // drawn; when drawn we take a reference into m_readback_queue and drain it a few per
         // frame in on_frame. Caller of process_readback_queue MUST hold m_mutex.
         struct PendingReadback
         {
-            uint32_t hash = 0;
+            uint64_t hash = 0;
             IDirect3DBaseTexture9 *tex9 = nullptr;
             ID3D11ShaderResourceView *srv11 = nullptr;
         };
-        std::unordered_set<uint32_t> m_pending_dumps;
+        std::unordered_set<uint64_t> m_pending_dumps;
         std::vector<PendingReadback> m_readback_queue;
         void process_readback_queue();
 
@@ -222,6 +227,6 @@ namespace TextureToolkit
         // long session. Caller MUST hold m_mutex.
         void evict_stale_textures();
 
-        std::filesystem::path find_injection_path(uint32_t hash);
+        std::filesystem::path find_injection_path(uint64_t hash);
     };
 }

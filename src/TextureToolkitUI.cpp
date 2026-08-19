@@ -14,7 +14,7 @@ namespace TextureToolkit
 {
     bool TextureToolkitUI::s_show_ui = false; // Default hidden; INSERT key toggles it
     static std::string s_status_message = "Ready";
-    static uint32_t s_selected_texture_hash = 0;
+    static uint64_t s_selected_texture_hash = 0;
     static char s_filter_buf[64] = "";
 
     static void SetStatusMessage(const std::string &msg)
@@ -399,7 +399,7 @@ namespace TextureToolkit
             if (ImGui::BeginTable("textures", 5, flags))
             {
                 ImGui::TableSetupScrollFreeze(0, 1);
-                ImGui::TableSetupColumn("Hash", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+                ImGui::TableSetupColumn("Hash", ImGuiTableColumnFlags_WidthFixed, 150.0f);
                 ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_WidthFixed, 82.0f);
                 ImGui::TableSetupColumn("Mips", ImGuiTableColumnFlags_WidthFixed, 38.0f);
                 ImGui::TableSetupColumn("Format", ImGuiTableColumnFlags_WidthStretch);
