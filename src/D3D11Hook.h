@@ -5,6 +5,7 @@
 #include <dxgi1_2.h>
 #include <mutex>
 #include <unordered_map>
+#include <atomic>
 
 namespace TextureToolkit
 {
@@ -28,6 +29,10 @@ namespace TextureToolkit
         void bootstrap_dxgi_present();
 
         ID3D11Device *get_device() const { return m_device; }
+        bool overlay_ready() const { return m_imgui_initialized; }
+
+        // See D3D9Hook::s_present_count.
+        static std::atomic<uint64_t> s_present_count;
         ID3D11DeviceContext *get_context() const { return m_context; }
 
         // Re-entrancy guard for injection

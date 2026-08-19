@@ -347,6 +347,21 @@ namespace TextureToolkit
         ImGui::SameLine();
         ImGui::TextColored(kColMuted, "   %.2f MiB", total_bytes / (1024.0 * 1024.0));
 
+        // Injection health. "Applied" lags "found" until each texture is next drawn, so this is a
+        // live readout rather than a verdict; "failed" is the one that needs the user's attention.
+        TextureManager::InjectionStats inj = tm.get_injection_stats();
+        if (inj.files_found > 0 || inj.failed > 0)
+        {
+            ImGui::TextColored(kColMuted, "Inject: %zu file(s), %zu applied", inj.files_found, inj.applied);
+            if (inj.failed > 0)
+            {
+                ImGui::SameLine();
+                ImGui::TextColored(ImVec4(1.00f, 0.45f, 0.40f, 1.0f), "  %zu failed", inj.failed);
+                ImGui::SetItemTooltip("These DDS files could not be loaded or created. The log line "
+                                      "for each says why (wrong format, truncated file, unsupported mapping).");
+            }
+        }
+
         // Filter.
         ImGui::SetNextItemWidth(260.0f);
         ImGui::InputTextWithHint("##filter", "Filter by hash, size or format", s_filter_buf, sizeof(s_filter_buf));

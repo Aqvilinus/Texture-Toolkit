@@ -3,6 +3,7 @@
 #include <d3d9.h>
 #include <mutex>
 #include <unordered_map>
+#include <atomic>
 
 namespace TextureToolkit
 {
@@ -18,6 +19,11 @@ namespace TextureToolkit
         void hook_device_interface(IDirect3DDevice9 *device);
 
         IDirect3DDevice9 *get_device() const { return m_device; }
+        bool overlay_ready() const { return m_imgui_initialized; }
+
+        // Frames this hook has presented. Read by the startup watchdog to tell "we are not on the
+        // game's render path" apart from "the game never rendered".
+        static std::atomic<uint64_t> s_present_count;
 
         // Re-entrancy guard: set true while creating replacement textures
         // to prevent our hooks from re-entering the injection path

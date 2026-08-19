@@ -1320,6 +1320,16 @@ namespace TextureToolkit
         return result;
     }
 
+    TextureManager::InjectionStats TextureManager::get_injection_stats()
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        InjectionStats st;
+        st.files_found = m_injected_files.size();
+        st.applied = m_d3d9_replacements.size() + m_d3d11_replacements.size();
+        st.failed = m_failed_injections.size();
+        return st;
+    }
+
     bool TextureManager::dump_texture(uint64_t hash, UINT width, UINT height, DXGI_FORMAT format, const void *data, UINT row_pitch)
     {
         reshade::api::format reshade_fmt = static_cast<reshade::api::format>(format);

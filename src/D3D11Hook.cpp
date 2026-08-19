@@ -49,6 +49,7 @@ namespace TextureToolkit
 
     static thread_local std::unordered_map<ID3D11Resource *, MappedResourceData> s_mapped_resources;
     thread_local bool D3D11Hook::s_inside_injection = false;
+    std::atomic<uint64_t> D3D11Hook::s_present_count{0};
 
     D3D11Hook &D3D11Hook::get()
     {
@@ -654,6 +655,7 @@ namespace TextureToolkit
             }
         }
 
+        s_present_count.fetch_add(1, std::memory_order_relaxed);
         get().m_swapchain = swapchain;
         get().render_imgui(swapchain);
         return get().m_orig_present(swapchain, SyncInterval, Flags);

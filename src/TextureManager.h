@@ -83,6 +83,17 @@ namespace TextureToolkit
         // Active Texture Queries
         std::vector<TextureDetails> get_active_textures();
 
+        // Injection health, for the panel: how many DDS files were found, how many are currently
+        // applied, and how many were rejected. Surfacing "failed" is what stops a user having to
+        // read the log to find out their file was never loaded.
+        struct InjectionStats
+        {
+            size_t files_found = 0;
+            size_t applied = 0;
+            size_t failed = 0;
+        };
+        InjectionStats get_injection_stats();
+
         // Live original-texture preview. The UI names one hash as the preview target; the
         // next time that texture is bound we take a COM reference to the exact resource the
         // game is using, so the preview stays valid even under pointer reuse and cannot be

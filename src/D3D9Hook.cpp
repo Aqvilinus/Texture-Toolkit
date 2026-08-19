@@ -48,6 +48,7 @@ namespace TextureToolkit
 
     static thread_local std::unordered_map<IDirect3DTexture9 *, LockedTextureData> s_locked_textures;
     thread_local bool D3D9Hook::s_inside_injection = false;
+    std::atomic<uint64_t> D3D9Hook::s_present_count{0};
 
     D3D9Hook &D3D9Hook::get()
     {
@@ -335,6 +336,7 @@ namespace TextureToolkit
             static bool s_logged = false;
             if (!s_logged) { s_logged = true; Logger::get().info("[D3D9Hook] First Present() call; overlay renders through Present."); }
 
+            s_present_count.fetch_add(1, std::memory_order_relaxed);
             s_in_present = true;
             get().m_device = device;
             get().render_imgui(device);
@@ -352,6 +354,7 @@ namespace TextureToolkit
             static bool s_logged = false;
             if (!s_logged) { s_logged = true; Logger::get().info("[D3D9Hook] First PresentEx() call; overlay renders through PresentEx."); }
 
+            s_present_count.fetch_add(1, std::memory_order_relaxed);
             s_in_present = true;
             get().m_device = device;
             get().render_imgui(device);
@@ -369,6 +372,7 @@ namespace TextureToolkit
             static bool s_logged = false;
             if (!s_logged) { s_logged = true; Logger::get().info("[D3D9Hook] First SwapChain Present() call; overlay renders through the swap chain."); }
 
+            s_present_count.fetch_add(1, std::memory_order_relaxed);
             s_in_present = true;
             get().render_imgui(get().m_device);
             HRESULT hr = get().m_orig_swapchain_present(swapchain, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
