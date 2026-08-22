@@ -1,14 +1,11 @@
 #include "texture/texture_manager.h"
-#include "render/render_backend.h"
-#include "render/d3d9/d3d9_format.h"
 #include "render/dxgi/dxgi_format.h"
 #include "texture/texture_hash.h"
 #include "core/logger.h"
-#include "render/d3d9/d3d9_hook.h"
-#include "render/d3d11/d3d11_hook.h"
 
 #include <DirectXTex.h>
 #include <algorithm>
+#include <ranges>
 
 namespace TextureToolkit
 {
@@ -17,7 +14,7 @@ namespace TextureToolkit
         TextureManagerBase::DumpLevel level;
         level.row_pitch = row_pitch;
         const size_t rows = DirectX::ComputeScanlines(format, height);
-        if (pixels != nullptr && rows != 0)
+        if (pixels != nullptr && rows != 0 && row_pitch != 0)
         {
             const uint8_t *src = static_cast<const uint8_t *>(pixels);
             level.data.assign(src, src + row_pitch * rows);
@@ -28,6 +25,9 @@ namespace TextureToolkit
     bool TextureManagerBase::dump_texture(uint32_t hash, UINT width, UINT height, DXGI_FORMAT format, DumpLevels levels)
     {
         if (levels.empty() || width == 0 || height == 0)
+            return false;
+
+        if (std::ranges::any_of(levels, [](const DumpLevel &level) { return level.row_pitch == 0 || level.data.empty(); }))
             return false;
 
         DumpRequest req;
@@ -143,8 +143,9 @@ namespace TextureToolkit
                 auto it = m_tracked_textures.find(req.hash);
                 if (it != m_tracked_textures.end())
                 {
-                    it->second.status = TextureStatus::DUMPED;
                     it->second.filepath_dumped = path;
+                    if (it->second.status != TextureStatus::INJECTED)
+                        it->second.status = TextureStatus::DUMPED;
                 }
             }
             else
@@ -165,8 +166,8 @@ namespace TextureToolkit
             int budget = 8;
             while (!m_readback_queue.empty() && budget-- > 0)
             {
-                batch.push_back(m_readback_queue.back());
-                m_readback_queue.pop_back();
+                batch.push_back(m_readback_queue.front());
+                m_readback_queue.pop_front();
             }
         }
 
@@ -188,8 +189,9 @@ namespace TextureToolkit
             auto it = m_tracked_textures.find(rb.hash);
             if (it != m_tracked_textures.end())
             {
-                it->second.status = TextureStatus::DUMPED;
                 it->second.filepath_dumped = path;
+                if (it->second.status != TextureStatus::INJECTED)
+                    it->second.status = TextureStatus::DUMPED;
             }
         }
     }
@@ -239,8 +241,9 @@ namespace TextureToolkit
 
         if (!path.empty())
         {
-            d.status = TextureStatus::DUMPED;
             d.filepath_dumped = path;
+            if (d.status != TextureStatus::INJECTED)
+                d.status = TextureStatus::DUMPED;
             Logger::get().info("[TextureManager] Dumped 0x" + format_hash_hex(hash) + " to " + path);
             return true;
         }

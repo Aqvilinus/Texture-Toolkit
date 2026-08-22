@@ -178,7 +178,7 @@ namespace TextureToolkit
     protected:
         // Small guarded operations instead of the map itself: the branches run on the render
         // thread and must not be able to take m_mutex twice by accident.
-        void track(uint32_t hash, const TextureDetails &details);      // m_mutex held
+        void track(uint32_t hash, TextureDetails details);             // m_mutex held
         void set_status(uint32_t hash, TextureStatus status);          // m_mutex held
         bool take_pending_dump(uint32_t hash);
         void queue_pending_dump(uint32_t hash);                         // m_mutex held
@@ -271,7 +271,7 @@ namespace TextureToolkit
         // frame in on_frame. process_readback_queue locks m_mutex itself, in short bursts.
         std::unordered_set<uint32_t> m_pending_dumps;
         std::atomic<bool> m_dumps_pending{false};
-        std::vector<PendingReadback> m_readback_queue;
+        std::deque<PendingReadback> m_readback_queue;
         void process_readback_queue();
 
         // Drops long-unseen tracked textures so the map does not grow without bound over a

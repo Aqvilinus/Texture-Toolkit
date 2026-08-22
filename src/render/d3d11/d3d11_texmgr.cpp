@@ -373,8 +373,8 @@ namespace TextureToolkit
                     break;
             }
 
+            // The status follows the file: the writer thread sets it once the DDS is on disk.
             dump_texture(hash, width, height, format, std::move(levels));
-            set_status(hash, TextureStatus::DUMPED);
         }
     }
 

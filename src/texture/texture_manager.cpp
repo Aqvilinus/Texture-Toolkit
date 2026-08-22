@@ -30,9 +30,22 @@ namespace TextureToolkit
         return nullptr;
     }
 
-    void TextureManagerBase::track(uint32_t hash, const TextureDetails &details)
+    void TextureManagerBase::track(uint32_t hash, TextureDetails details)
     {
-        m_tracked_textures.insert_or_assign(hash, details);
+        // The game creates the same content many times over a session, and each registration
+        // describes only the new instance -- it knows nothing of the dump an earlier one wrote.
+        // Carry that across, or the panel forgets a file that is sitting on disk. The fresh status
+        // wins when it says INJECTED: that describes this instance, and a replacement may have been
+        // released since the last one.
+        if (auto old = m_tracked_textures.find(hash); old != m_tracked_textures.end())
+        {
+            if (details.filepath_dumped.empty())
+                details.filepath_dumped = old->second.filepath_dumped;
+            if (details.status == TextureStatus::ORIGINAL && !details.filepath_dumped.empty())
+                details.status = TextureStatus::DUMPED;
+        }
+
+        m_tracked_textures.insert_or_assign(hash, std::move(details));
     }
 
     void TextureManagerBase::set_status(uint32_t hash, TextureStatus status)
@@ -305,19 +318,23 @@ namespace TextureToolkit
         const uint64_t now = now_ticks();
         const uint64_t scene_window = static_cast<uint64_t>(kSceneLingerSeconds * static_cast<double>(ticks_per_second()));
 
-        for (auto &pair : m_tracked_textures)
+        for (const auto &pair : m_tracked_textures)
         {
-            if (m_injected_files.find(pair.first) != m_injected_files.end() || pair.second.replacement_handle != 0)
-            {
-                pair.second.status = TextureStatus::INJECTED;
-            }
-
             if (show_current_frame_only)
             {
                 if (pair.second.last_seen_ticks == 0 || pair.second.last_seen_ticks + scene_window < now)
                     continue;
             }
-            result.push_back(pair.second);
+
+            TextureDetails entry = pair.second;
+
+            // A replacement can appear after the texture was tracked -- dropping a file in and
+            // hitting Reload -- so injection is decided here, from what is loaded now. Into the
+            // copy being handed out: a reader has no business rewriting what it reads.
+            if (m_injected_files.contains(pair.first) || entry.replacement_handle != 0)
+                entry.status = TextureStatus::INJECTED;
+
+            result.push_back(std::move(entry));
         }
         return result;
     }

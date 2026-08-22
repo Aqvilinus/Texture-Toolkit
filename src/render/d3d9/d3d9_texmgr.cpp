@@ -107,7 +107,7 @@ namespace TextureToolkit
             build_replacement9(device, hash, inject_path, original_levels, details);
         }
 
-        m_tracked_textures[hash] = details;
+        track(hash, details);
         Logger::get().debug("[D3D9Textures] Tracked D3D9 texture: 0x" + details.hash_hex + " (" + std::to_string(width) + "x" + std::to_string(height) + ")");
 
         if (auto_dump)
@@ -116,7 +116,6 @@ namespace TextureToolkit
             if (dxgi_fmt != DXGI_FORMAT_UNKNOWN)
             {
                 dump_texture(hash, width, height, dxgi_fmt, {copy_level(dxgi_fmt, height, pixel_data, pitch)});
-                set_status(hash, TextureStatus::DUMPED);
             }
         }
     }
