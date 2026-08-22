@@ -157,11 +157,18 @@ namespace TextureToolkit
     {
         std::lock_guard<std::mutex> lock(m_mutex);
 
-        if (hash == m_file_preview_hash)
+        std::error_code ec;
+        const std::filesystem::file_time_type written = std::filesystem::last_write_time(dds_path, ec);
+        if (ec)
+            return 0;
+
+        // The timestamp is part of the key: overwriting <hash>.dds keeps the name, and the panel
+        // would otherwise go on showing the texture uploaded from the previous contents.
+        if (hash == m_file_preview_hash && written == m_file_preview_written)
             return branch_file_preview_handle();
 
         release_branch_file_preview();
-        m_file_preview_hash = hash;
+        m_file_preview_hash = 0;
 
         DirectX::ScratchImage image;
         DirectX::TexMetadata meta = {};
@@ -169,7 +176,18 @@ namespace TextureToolkit
             return 0;
 
         const DirectX::Image *top = image.GetImage(0, 0, 0);
-        return (top != nullptr) ? upload_file_preview(*top) : 0;
+        if (top == nullptr)
+            return 0;
+
+        // Only now: a file half-written when we first looked at it must be retried, and the key
+        // is what says we already have this one.
+        const uint64_t handle = upload_file_preview(*top);
+        if (handle != 0)
+        {
+            m_file_preview_hash = hash;
+            m_file_preview_written = written;
+        }
+        return handle;
     }
 
     void TextureManagerBase::release_replacements()
@@ -329,9 +347,11 @@ namespace TextureToolkit
             TextureDetails entry = pair.second;
 
             // A replacement can appear after the texture was tracked -- dropping a file in and
-            // hitting Reload -- so injection is decided here, from what is loaded now. Into the
-            // copy being handed out: a reader has no business rewriting what it reads.
-            if (m_injected_files.contains(pair.first) || entry.replacement_handle != 0)
+            // hitting Reload -- so injection is decided here. From the replacement the branch
+            // actually built, not from a file lying in inject/: that file may be corrupt, in a
+            // format the device refuses, or ignored entirely with EnableInjection off. Into the
+            // copy being handed out, because a reader has no business rewriting what it reads.
+            if (entry.replacement_handle != 0 || branch_has_replacement(pair.first))
                 entry.status = TextureStatus::INJECTED;
 
             result.push_back(std::move(entry));

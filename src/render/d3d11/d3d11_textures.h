@@ -42,6 +42,7 @@ namespace TextureToolkit
         uint64_t branch_preview_handle() const override;
         uint64_t upload_file_preview(const DirectX::Image &image) override;
         void release_branch_replacements() override;
+        bool branch_has_replacement(uint32_t hash) const override { return m_d3d11.injected.contains(hash); }
         void release_branch_preview() override;
         void release_branch_file_preview() override;
 

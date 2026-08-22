@@ -197,6 +197,9 @@ namespace TextureToolkit
 
         virtual std::string dump_readback(const PendingReadback &rb) = 0;
 
+        // Whether a replacement was actually built for this hash. m_mutex held.
+        virtual bool branch_has_replacement(uint32_t hash) const = 0;
+
         TextureManagerBase() = default;
 
         std::filesystem::path m_game_dir;
@@ -242,6 +245,7 @@ namespace TextureToolkit
         std::atomic<uint32_t> m_preview_wanted{0};   // m_preview_target_hash, readable without the lock
 
         uint32_t m_file_preview_hash = 0;
+        std::filesystem::file_time_type m_file_preview_written{};
 
         void release_preview();
 
