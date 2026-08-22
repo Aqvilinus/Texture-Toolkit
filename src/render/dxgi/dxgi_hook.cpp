@@ -22,7 +22,7 @@ namespace TextureToolkit
         HRESULT adopt_factory(HRESULT hr, void **out)
         {
             if (SUCCEEDED(hr) && out != nullptr && *out != nullptr)
-                DXGIHook::get().hook_dxgi_factory(static_cast<IDXGIFactory *>(*out));
+                DXGIHook::get().hook_factory(static_cast<IDXGIFactory *>(*out));
             return hr;
         }
 
@@ -100,6 +100,85 @@ namespace TextureToolkit
         return true;
     }
 
+    // --- Factories: three exported entry points, any of which a game may call ---
+
+    void DXGIHook::hook_factory(IDXGIFactory *factory)
+    {
+        if (factory == nullptr || m_orig_create_swapchain != nullptr)
+            return;
+
+        void **factory_vtable = *reinterpret_cast<void ***>(factory);
+        void *create_swapchain_addr = factory_vtable[10]; // IDXGIFactory::CreateSwapChain is index 10
+
+        HookManager::get().create_hook(create_swapchain_addr, &Hooked_CreateSwapChain, reinterpret_cast<void **>(&m_orig_create_swapchain));
+        Logger::get().info("[D3D11Hook] Intercepted IDXGIFactory::CreateSwapChain (VTable index 10).");
+
+        // Flip-model games (DXGI 1.2+, e.g. Deus Ex: Mankind Divided) create their swapchain
+        // through IDXGIFactory2::CreateSwapChainForHwnd and never touch CreateSwapChain, so we
+        // must hook that too or the Present hook is never installed and the overlay never shows.
+        IDXGIFactory2 *factory2 = nullptr;
+        if (SUCCEEDED(factory->QueryInterface(__uuidof(IDXGIFactory2), reinterpret_cast<void **>(&factory2))) && factory2 != nullptr)
+        {
+            void **factory2_vtable = *reinterpret_cast<void ***>(factory2);
+            void *create_for_hwnd_addr = factory2_vtable[15]; // IDXGIFactory2::CreateSwapChainForHwnd is index 15
+
+            HookManager::get().create_hook(create_for_hwnd_addr, &Hooked_CreateSwapChainForHwnd, reinterpret_cast<void **>(&m_orig_create_swapchain_for_hwnd));
+            Logger::get().info("[D3D11Hook] Intercepted IDXGIFactory2::CreateSwapChainForHwnd (VTable index 15).");
+            factory2->Release();
+        }
+    }
+
+    HRESULT WINAPI DXGIHook::Hooked_CreateDXGIFactory(REFIID riid, void **ppFactory)
+    {
+        Logger::get().info("[D3D11Hook] CreateDXGIFactory intercepted.");
+        const auto &orig = DXGIHook::get().m_orig_create_dxgi_factory;
+        return adopt_factory(orig != nullptr ? orig(riid, ppFactory) : E_FAIL, ppFactory);
+    }
+
+    HRESULT WINAPI DXGIHook::Hooked_CreateDXGIFactory1(REFIID riid, void **ppFactory)
+    {
+        Logger::get().info("[D3D11Hook] CreateDXGIFactory1 intercepted.");
+        const auto &orig = DXGIHook::get().m_orig_create_dxgi_factory1;
+        return adopt_factory(orig != nullptr ? orig(riid, ppFactory) : E_FAIL, ppFactory);
+    }
+
+    HRESULT WINAPI DXGIHook::Hooked_CreateDXGIFactory2(UINT Flags, REFIID riid, void **ppFactory)
+    {
+        Logger::get().info("[D3D11Hook] CreateDXGIFactory2 intercepted.");
+        const auto &orig = DXGIHook::get().m_orig_create_dxgi_factory2;
+        return adopt_factory(orig != nullptr ? orig(Flags, riid, ppFactory) : E_FAIL, ppFactory);
+    }
+
+    // --- Swapchains: however the game asks a factory for one ---
+
+    void DXGIHook::hook_swapchain(IDXGISwapChain *swapchain)
+    {
+        if (!running())
+            return;
+
+        if (swapchain == nullptr || m_orig_present != nullptr)
+            return;
+
+        void **sc_vtable = *reinterpret_cast<void ***>(swapchain);
+        void *present_addr = sc_vtable[8]; // IDXGISwapChain::Present is index 8
+
+        HookManager::get().create_hook(present_addr, &Hooked_Present, reinterpret_cast<void **>(&m_orig_present));
+        m_present_installed.store(true, std::memory_order_release);
+        Logger::get().info("[D3D11Hook] REAL GAME SWAPCHAIN INTERCEPTED! Present hook active.");
+    }
+
+    HRESULT STDMETHODCALLTYPE DXGIHook::Hooked_CreateSwapChain(IDXGIFactory *factory, IUnknown *pDevice, DXGI_SWAP_CHAIN_DESC *pDesc, IDXGISwapChain **ppSwapChain)
+    {
+        Logger::get().info("[D3D11Hook] IDXGIFactory::CreateSwapChain intercepted.");
+        return adopt_swapchain(DXGIHook::get().m_orig_create_swapchain(factory, pDevice, pDesc, ppSwapChain), ppSwapChain);
+    }
+
+    HRESULT STDMETHODCALLTYPE DXGIHook::Hooked_CreateSwapChainForHwnd(IDXGIFactory2 *factory, IUnknown *pDevice, HWND hWnd, const DXGI_SWAP_CHAIN_DESC1 *pDesc, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *pFullscreenDesc, IDXGIOutput *pRestrictToOutput, IDXGISwapChain1 **ppSwapChain)
+    {
+        Logger::get().info("[D3D11Hook] IDXGIFactory2::CreateSwapChainForHwnd intercepted.");
+        return adopt_swapchain(DXGIHook::get().m_orig_create_swapchain_for_hwnd(factory, pDevice, hWnd, pDesc, pFullscreenDesc, pRestrictToOutput, ppSwapChain), ppSwapChain);
+    }
+
     void DXGIHook::bootstrap_present()
     {
 
@@ -169,7 +248,7 @@ namespace TextureToolkit
         D3D_FEATURE_LEVEL fl = {};
 
         // Call the trampoline, not the hooked export, so this does not re-enter our own hook.
-        HRESULT hr = D3D11Hook::get().create_device_and_swapchain_untouched(
+        HRESULT hr = D3D11Hook::get().original_create_device_and_swapchain(
             nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION,
             &scd, &sc, &dev, &fl, &ctx);
 
@@ -190,80 +269,7 @@ namespace TextureToolkit
         UnregisterClassW(wc.lpszClassName, wc.hInstance);
     }
 
-    void DXGIHook::hook_swapchain(IDXGISwapChain *swapchain)
-    {
-        if (!running())
-            return;
-
-        if (swapchain == nullptr || m_orig_present != nullptr)
-            return;
-
-        void **sc_vtable = *reinterpret_cast<void ***>(swapchain);
-        void *present_addr = sc_vtable[8]; // IDXGISwapChain::Present is index 8
-
-        HookManager::get().create_hook(present_addr, &Hooked_Present, reinterpret_cast<void **>(&m_orig_present));
-        m_present_installed.store(true, std::memory_order_release);
-        Logger::get().info("[D3D11Hook] REAL GAME SWAPCHAIN INTERCEPTED! Present hook active.");
-    }
-
-    void DXGIHook::hook_dxgi_factory(IDXGIFactory *factory)
-    {
-        if (factory == nullptr || m_orig_create_swapchain != nullptr)
-            return;
-
-        void **factory_vtable = *reinterpret_cast<void ***>(factory);
-        void *create_swapchain_addr = factory_vtable[10]; // IDXGIFactory::CreateSwapChain is index 10
-
-        HookManager::get().create_hook(create_swapchain_addr, &Hooked_CreateSwapChain, reinterpret_cast<void **>(&m_orig_create_swapchain));
-        Logger::get().info("[D3D11Hook] Intercepted IDXGIFactory::CreateSwapChain (VTable index 10).");
-
-        // Flip-model games (DXGI 1.2+, e.g. Deus Ex: Mankind Divided) create their swapchain
-        // through IDXGIFactory2::CreateSwapChainForHwnd and never touch CreateSwapChain, so we
-        // must hook that too or the Present hook is never installed and the overlay never shows.
-        IDXGIFactory2 *factory2 = nullptr;
-        if (SUCCEEDED(factory->QueryInterface(__uuidof(IDXGIFactory2), reinterpret_cast<void **>(&factory2))) && factory2 != nullptr)
-        {
-            void **factory2_vtable = *reinterpret_cast<void ***>(factory2);
-            void *create_for_hwnd_addr = factory2_vtable[15]; // IDXGIFactory2::CreateSwapChainForHwnd is index 15
-
-            HookManager::get().create_hook(create_for_hwnd_addr, &Hooked_CreateSwapChainForHwnd, reinterpret_cast<void **>(&m_orig_create_swapchain_for_hwnd));
-            Logger::get().info("[D3D11Hook] Intercepted IDXGIFactory2::CreateSwapChainForHwnd (VTable index 15).");
-            factory2->Release();
-        }
-    }
-
-    HRESULT WINAPI DXGIHook::Hooked_CreateDXGIFactory(REFIID riid, void **ppFactory)
-    {
-        Logger::get().info("[D3D11Hook] CreateDXGIFactory intercepted.");
-        const auto &orig = DXGIHook::get().m_orig_create_dxgi_factory;
-        return adopt_factory(orig != nullptr ? orig(riid, ppFactory) : E_FAIL, ppFactory);
-    }
-
-    HRESULT WINAPI DXGIHook::Hooked_CreateDXGIFactory1(REFIID riid, void **ppFactory)
-    {
-        Logger::get().info("[D3D11Hook] CreateDXGIFactory1 intercepted.");
-        const auto &orig = DXGIHook::get().m_orig_create_dxgi_factory1;
-        return adopt_factory(orig != nullptr ? orig(riid, ppFactory) : E_FAIL, ppFactory);
-    }
-
-    HRESULT WINAPI DXGIHook::Hooked_CreateDXGIFactory2(UINT Flags, REFIID riid, void **ppFactory)
-    {
-        Logger::get().info("[D3D11Hook] CreateDXGIFactory2 intercepted.");
-        const auto &orig = DXGIHook::get().m_orig_create_dxgi_factory2;
-        return adopt_factory(orig != nullptr ? orig(Flags, riid, ppFactory) : E_FAIL, ppFactory);
-    }
-
-    HRESULT STDMETHODCALLTYPE DXGIHook::Hooked_CreateSwapChain(IDXGIFactory *factory, IUnknown *pDevice, DXGI_SWAP_CHAIN_DESC *pDesc, IDXGISwapChain **ppSwapChain)
-    {
-        Logger::get().info("[D3D11Hook] IDXGIFactory::CreateSwapChain intercepted.");
-        return adopt_swapchain(DXGIHook::get().m_orig_create_swapchain(factory, pDevice, pDesc, ppSwapChain), ppSwapChain);
-    }
-
-    HRESULT STDMETHODCALLTYPE DXGIHook::Hooked_CreateSwapChainForHwnd(IDXGIFactory2 *factory, IUnknown *pDevice, HWND hWnd, const DXGI_SWAP_CHAIN_DESC1 *pDesc, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *pFullscreenDesc, IDXGIOutput *pRestrictToOutput, IDXGISwapChain1 **ppSwapChain)
-    {
-        Logger::get().info("[D3D11Hook] IDXGIFactory2::CreateSwapChainForHwnd intercepted.");
-        return adopt_swapchain(DXGIHook::get().m_orig_create_swapchain_for_hwnd(factory, pDevice, hWnd, pDesc, pFullscreenDesc, pRestrictToOutput, ppSwapChain), ppSwapChain);
-    }
+    // --- Present: one vtable slot, shared by every swapchain in the process ---
 
     HRESULT STDMETHODCALLTYPE DXGIHook::Hooked_Present(IDXGISwapChain *swapchain, UINT SyncInterval, UINT Flags)
     {
