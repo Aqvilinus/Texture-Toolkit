@@ -103,7 +103,7 @@ namespace TextureToolkit
         }
         details.last_seen_ticks = now_ticks();
 
-        std::filesystem::path inject_path = find_injection_path(hash);
+        std::filesystem::path inject_path = find_injection_path_locked(hash);
         if (enable_injection && !inject_path.empty() &&
             m_d3d9.replacements.find(hash) == m_d3d9.replacements.end())
         {

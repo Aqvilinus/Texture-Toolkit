@@ -197,7 +197,7 @@ namespace TextureToolkit
             if (m_failed_injections.find(hash) != m_failed_injections.end())
                 return nullptr;
 
-            inject_path = find_injection_path(hash);
+            inject_path = find_injection_path_locked(hash);
             if (inject_path.empty())
                 return nullptr;
         }

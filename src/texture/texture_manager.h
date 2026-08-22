@@ -94,6 +94,7 @@ namespace TextureToolkit
         // many were refreshed; files added for textures the game has not created yet apply the
         // next time it creates them.
         size_t rescan_injected();
+        std::unordered_map<uint32_t, std::filesystem::path> scan_inject_dir() const;
         void on_frame();
 
         std::filesystem::path get_dump_dir() const { return m_dump_dir; }
@@ -208,7 +209,7 @@ namespace TextureToolkit
 
 
         mutable std::mutex m_mutex;
-        uint64_t m_frame_count = 0;
+        uint64_t m_next_eviction_ticks = 0;
         // Sampled once per frame and read by the bind hook, so "recently drawn" is a duration
         // rather than a frame count: the same 60 frames are a second at 60 fps and a third of one
         // at 160.
@@ -282,7 +283,8 @@ namespace TextureToolkit
         // long session. Caller MUST hold m_mutex.
         void evict_stale_textures();
 
-        std::filesystem::path find_injection_path(uint32_t hash);
+        std::filesystem::path find_injection_path_locked(uint32_t hash);   // m_mutex held
+        std::filesystem::path find_injection_path(uint32_t hash);          // takes m_mutex
 
 
         // Handle of the live texture pinned for preview, 0 if none is pinned yet.

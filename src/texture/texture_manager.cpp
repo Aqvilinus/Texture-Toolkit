@@ -3,23 +3,17 @@
 #include "render/d3d11/d3d11_textures.h"
 #include "render/d3d9/d3d9_textures.h"
 #include "render/render_backend.h"
-#include "render/d3d9/d3d9_format.h"
 #include "render/dxgi/dxgi_format.h"
 #include "core/config.h"
-#include "render/d3d9/d3d9_hook.h"
-#include "render/d3d11/d3d11_hook.h"
 #include <DirectXTex.h>
-#include <objbase.h>
 #include "core/logger.h"
-#include "ui/overlay.h"
 #include <windows.h>
-#include <sstream>
-#include <iomanip>
 #include <algorithm>
 
 namespace TextureToolkit
 {
     constexpr double kEvictAgeSeconds = 60.0;
+    constexpr double kEvictIntervalSeconds = 10.0;
     TextureManagerBase *TextureManagerBase::active()
     {
         RenderBackend &backend = RenderBackend::get();
@@ -96,9 +90,13 @@ namespace TextureToolkit
         filter_small_textures = cfg.filter_small_textures;
         show_current_frame_only = cfg.show_current_frame_only;
 
-        std::error_code ec;
-        std::filesystem::create_directories(m_dump_dir, ec);
-        std::filesystem::create_directories(m_inject_dir, ec);
+        for (const std::filesystem::path *dir : {&m_dump_dir, &m_inject_dir})
+        {
+            std::error_code ec;
+            std::filesystem::create_directories(*dir, ec);
+            if (ec)
+                Logger::get().error("[TextureManager] Cannot create " + dir->string() + ": " + ec.message());
+        }
 
         Logger::get().info("[TextureManager] Standalone Texture Toolkit initialized.");
         Logger::get().info("[TextureManager] Dump directory: " + m_dump_dir.string());
@@ -204,8 +202,6 @@ namespace TextureToolkit
         if (!lock.owns_lock())
             return;
 
-        m_frame_count++;
-
         const uint64_t now = now_ticks();
         m_frame_ticks.store(now, std::memory_order_relaxed);
 
@@ -223,8 +219,13 @@ namespace TextureToolkit
                 it->second.last_seen_ticks = now;
         }
 
-        if (m_frame_count % 300 == 0)
+        // On a timer, not a frame count: the age below is in seconds, and a frame count means
+        // sweeping eight times as often at 240 fps as at 30.
+        if (now >= m_next_eviction_ticks)
+        {
             evict_stale_textures();
+            m_next_eviction_ticks = now + static_cast<uint64_t>(kEvictIntervalSeconds * static_cast<double>(ticks_per_second()));
+        }
 
         process_branch_injections();
         lock.unlock();
@@ -256,60 +257,112 @@ namespace TextureToolkit
         }
     }
 
-    size_t TextureManagerBase::rescan_injected()
+    static bool clash_is_prefixed(const std::filesystem::path &path)
     {
-        std::unique_lock<std::mutex> lock(m_mutex);
-        m_injected_files.clear();
-        m_failed_injections.clear(); // retry files that were bad last time; they may be fixed now
-        m_pending_injections.clear();
+        const std::string stem = path.stem().string();
+        return stem.starts_with("0x") || stem.starts_with("0X");
+    }
 
-        std::error_code scan_ec;
-        if (!std::filesystem::exists(m_inject_dir, scan_ec) || scan_ec)
-            return 0;
+    // Off m_mutex: a slow disk, an antivirus or a resource root on a network share would
+    // otherwise stall the hooks that feed tracking for as long as the scan takes.
+    std::unordered_map<uint32_t, std::filesystem::path> TextureManagerBase::scan_inject_dir() const
+    {
+        std::unordered_map<uint32_t, std::filesystem::path> found;
 
-        for (const auto &entry : std::filesystem::directory_iterator(m_inject_dir, scan_ec))
+        std::error_code ec;
+        if (!std::filesystem::exists(m_inject_dir, ec) || ec)
+            return found;
+
+        // Advanced by hand: the range-for form calls an operator++ that throws on a directory
+        // error, and an exception here would unwind through whichever game call we are inside.
+        std::filesystem::directory_iterator it{m_inject_dir, ec};
+        const std::filesystem::directory_iterator end;
+
+        while (!ec && it != end)
         {
-            if (!entry.is_regular_file(scan_ec) || scan_ec)
-                continue;
+            const std::filesystem::path path = it->path();
 
-            std::string ext = entry.path().extension().string();
-            std::ranges::transform(ext, ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            std::error_code entry_ec;
+            if (it->is_regular_file(entry_ec) && !entry_ec)
+            {
+                std::string ext = path.extension().string();
+                std::ranges::transform(ext, ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
-            // DDS-only injection for maximum format/compatibility safety.
-            if (ext != ".dds")
-                continue;
+                // DDS-only injection for maximum format/compatibility safety.
+                if (ext == ".dds")
+                {
+                    const std::string stem = path.stem().string();
+                    std::string_view digits{stem};
+                    const bool prefixed = digits.starts_with("0x") || digits.starts_with("0X");
+                    if (prefixed)
+                        digits.remove_prefix(2);
 
-            const std::string stem = entry.path().stem().string();
-            std::string_view digits{stem};
-            if (digits.starts_with("0x") || digits.starts_with("0X"))
-                digits.remove_prefix(2);
+                    // from_chars rather than stoul: no exception, no allocation, and it refuses a
+                    // name with anything after the hex instead of silently taking the prefix.
+                    uint32_t hash = 0;
+                    const auto [last, parse_ec] = std::from_chars(digits.data(), digits.data() + digits.size(), hash, 16);
 
-            // from_chars rather than stoul: no exception, no allocation, and it refuses a name with
-            // anything after the hex instead of silently taking the prefix.
-            uint32_t hash = 0;
-            const auto [last, ec] = std::from_chars(digits.data(), digits.data() + digits.size(), hash, 16);
-            if (ec == std::errc{} && last == digits.data() + digits.size())
-                m_injected_files.insert_or_assign(hash, entry.path());
+                    // Zero is what the rest of the tool means by "no such texture", so 0.dds names
+                    // nothing and would only ever match by accident.
+                    if (parse_ec == std::errc{} && last == digits.data() + digits.size() && hash != 0)
+                    {
+                        // 5D3E2CCE.dds and 0x5d3e2cce.dds are the same hash. Which file the
+                        // directory hands back first is not fixed, so the winner is chosen by the
+                        // name instead: the plain form is canonical, and the rest is alphabetical
+                        // -- otherwise the game could load a different file after a restart.
+                        if (auto clash = found.find(hash); clash != found.end())
+                        {
+                            const std::string kept = clash->second.filename().string();
+                            const std::string mine = path.filename().string();
+                            const bool wins = std::pair{prefixed, mine} < std::pair{clash_is_prefixed(clash->second), kept};
+
+                            Logger::get().warn("[TextureManager] Both " + kept + " and " + mine + " name 0x" +
+                                               format_hash_hex(hash) + "; loading " + (wins ? mine : kept) + ".");
+                            if (wins)
+                                clash->second = path;
+                        }
+                        else
+                        {
+                            found.emplace(hash, path);
+                        }
+                    }
+                }
+            }
+
+            it.increment(ec);
         }
 
-        Logger::get().info("[TextureManager] Scanned " + std::to_string(m_injected_files.size()) + " DDS replacement file(s) in TT/inject.");
-        lock.unlock();
+        return found;
+    }
+
+    size_t TextureManagerBase::rescan_injected()
+    {
+        std::unordered_map<uint32_t, std::filesystem::path> found = scan_inject_dir();
+
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            m_injected_files.swap(found);
+            m_failed_injections.clear(); // retry files that were bad last time; they may be fixed now
+            m_pending_injections.clear();
+
+            Logger::get().info("[TextureManager] Scanned " + std::to_string(m_injected_files.size()) + " DDS replacement file(s) in TT/inject.");
+        }
 
         return refresh_branch();
     }
 
-    std::filesystem::path TextureManagerBase::find_injection_path(uint32_t hash)
+    std::filesystem::path TextureManagerBase::find_injection_path_locked(uint32_t hash)
     {
         auto it = m_injected_files.find(hash);
-        if (it != m_injected_files.end())
-        {
-            return it->second;
-        }
-        return std::filesystem::path();
+        return (it != m_injected_files.end()) ? it->second : std::filesystem::path();
     }
 
-    // Total free address space and the largest single free block. A 32-bit process usually fails
-    // an allocation for want of a contiguous range, not for want of memory; only the second
+    std::filesystem::path TextureManagerBase::find_injection_path(uint32_t hash)
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return find_injection_path_locked(hash);
+    }
+
     uint64_t TextureManagerBase::ticks_per_second()
     {
         static const uint64_t frequency = [] {
