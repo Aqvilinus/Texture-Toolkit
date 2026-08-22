@@ -1,5 +1,5 @@
 /*
- * Texture Toolkit Standalone v1.0.0 by BadassBaboon
+ * Texture Toolkit Standalone v1.1.0 -- originally by BadassBaboon
  * Native Proxy Wrapper & ASI Plugin for Direct3D 9 & Direct3D 11
  */
 
@@ -7,13 +7,16 @@
 #include <d3d9.h>
 #include <d3d11.h>
 #include <dxgi.h>
-#include "Config.h"
-#include "Logger.h"
-#include "HookManager.h"
-#include "TextureManager.h"
-#include "D3D9Hook.h"
-#include "D3D11Hook.h"
-#include "DInput8Hook.h"
+#include "core/config.h"
+#include "core/logger.h"
+#include "core/hook_manager.h"
+#include "texture/texture_manager.h"
+#include "render/d3d11/d3d11_textures.h"
+#include "render/d3d9/d3d9_textures.h"
+#include "render/d3d9/d3d9_hook.h"
+#include "render/d3d11/d3d11_hook.h"
+#include "render/dxgi/dxgi_hook.h"
+#include "input/input_hook.h"
 
 // Handle to our own module (.asi). Set in DllMain before initialize_standalone runs.
 HMODULE g_our_module = nullptr;
@@ -34,30 +37,48 @@ namespace TextureToolkit
         if (asi_dir.empty())
             asi_dir = game_dir;
 
+        // All of this runs under the loader lock: files, the INI, MinHook and the detours. That is
+        // a knowingly accepted risk, not an absence of one -- hooks have to be in place before the
+        // game's first D3D call, and an ASI has no earlier entry point. Only device creation is
+        // deferred to a thread, because it deadlocks here.
         Logger::get().init(asi_dir);
-        Logger::get().info("[Main] Texture Toolkit v1.0.0 initializing...");
+        Logger::get().info("[Main] Texture Toolkit v1.1.0 initializing...");
 
         ConfigManager::get().init(asi_dir);
         Logger::get().set_min_level(ConfigManager::get().get_config().verbose ? LogLevel::Debug : LogLevel::Info);
 
-        TextureManager::get().init();
+        D3D11TextureManager::get().init();
+        D3D9TextureManager::get().init();
         HookManager::get().init();
 
-        DInput8Hook::get().init();
+        // These exist only so the panel can take input from the game; with the panel off they
+        // are pure overhead on paths walked thousands of times a second.
+        if (ConfigManager::get().get_config().enable_overlay)
+            InputHook::get().init();
         D3D9Hook::get().init();
         D3D11Hook::get().init();
+        DXGIHook::get().init();
 
-        Logger::get().info("[Main] Initialization complete. Press INSERT to open Texture Toolkit UI.");
+        const auto &cfg = ConfigManager::get().get_config();
+        Logger::get().info(cfg.enable_overlay
+                               ? "[Main] Initialization complete. Press " + hotkey_name(cfg.hotkey) + " to open the Texture Toolkit panel."
+                               : std::string("[Main] Initialization complete. Panel disabled by config (EnableOverlay=0); texture replacement only."));
     }
 
     void shutdown_standalone()
     {
         Logger::get().info("[Main] Texture Toolkit Standalone shutting down...");
-        TextureManager::get().shutdown();
-        DInput8Hook::get().shutdown();
+
+        // Detours first: while any of them is live it can still call into a manager, and a manager
+        // that has already released its device objects would be reached through a stale pointer.
+        DXGIHook::get().begin_shutdown();
+        InputHook::get().shutdown();
         D3D9Hook::get().shutdown();
         D3D11Hook::get().shutdown();
         HookManager::get().shutdown();
+
+        D3D11TextureManager::get().shutdown();
+        D3D9TextureManager::get().shutdown();
     }
 }
 
