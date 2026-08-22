@@ -13,6 +13,27 @@ textures by CRC-32C, scoping the re-entrancy guards per thread, leaving D3D9 fil
 Its source was read closely and its reasoning argued with; the code here is our own, the approaches
 are theirs.
 
+## 1.1.1
+
+Correctness fixes found by reading the code rather than by hitting them in game.
+
+The panel could show a texture as dumped with no file behind it, and as injected when the only
+thing that existed was a DDS in `inject/` -- which may be corrupt, in a format the device refuses,
+or ignored entirely with injection off. Both now follow what actually happened: the writer thread
+sets the dump status once the file is on disk, and the injected status comes from the replacement
+the branch managed to build. Re-registering the same content no longer loses the dump an earlier
+one wrote.
+
+The inject scan no longer holds the manager lock while it walks the directory, so a slow disk or a
+resource root on a network share cannot stall texture tracking; it also cannot throw out of a
+directory error into whatever game call it was made from. Two files naming one hash resolve the
+same way every run instead of by directory order.
+
+D3D9 lock pitches are signed and were taken as unsigned, so a negative one became an enormous
+length instead of a refused lock -- in one place a write past the end of a mapped rectangle.
+
+Sources for the D3D11 and DXGI hooks are grouped the way the input and D3D9 ones already were.
+
 ## Replacement moved to texture creation
 
 Upstream substitutes textures at draw time. That is the hottest hook there is: a busy frame binds

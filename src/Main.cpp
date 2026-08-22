@@ -1,5 +1,5 @@
 /*
- * Texture Toolkit Standalone v1.1.0 -- originally by BadassBaboon
+ * Texture Toolkit Standalone -- originally by BadassBaboon
  * Native Proxy Wrapper & ASI Plugin for Direct3D 9 & Direct3D 11
  */
 
@@ -8,6 +8,7 @@
 #include <d3d11.h>
 #include <dxgi.h>
 #include "core/config.h"
+#include "core/version.h"
 #include "core/logger.h"
 #include "core/hook_manager.h"
 #include "texture/texture_manager.h"
@@ -42,7 +43,7 @@ namespace TextureToolkit
         // game's first D3D call, and an ASI has no earlier entry point. Only device creation is
         // deferred to a thread, because it deadlocks here.
         Logger::get().init(asi_dir);
-        Logger::get().info("[Main] Texture Toolkit v1.1.0 initializing...");
+        Logger::get().info("[Main] Texture Toolkit v" TT_VERSION " initializing...");
 
         ConfigManager::get().init(asi_dir);
         Logger::get().set_min_level(ConfigManager::get().get_config().verbose ? LogLevel::Debug : LogLevel::Info);

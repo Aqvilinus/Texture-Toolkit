@@ -1,4 +1,5 @@
 #include "ui/osd_banner.h"
+#include "core/version.h"
 #include "core/config.h"
 #include "texture/texture_manager.h"
 #include <imgui.h>
@@ -79,7 +80,7 @@ namespace TextureToolkit
 
         if (ImGui::Begin("##TextureToolkitOSD", nullptr, flags))
         {
-            ImGui::TextColored(ImVec4(0.95f, 0.80f, 0.20f, alpha), "Texture Toolkit v1.0.0");
+            ImGui::TextColored(ImVec4(0.95f, 0.80f, 0.20f, alpha), "Texture Toolkit v" TT_VERSION);
             ImGui::SameLine();
             ImGui::TextColored(ImVec4(0.70f, 0.70f, 0.70f, alpha), "by BadassBaboon");
 
