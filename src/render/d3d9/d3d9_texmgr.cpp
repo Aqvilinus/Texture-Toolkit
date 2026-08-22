@@ -21,6 +21,9 @@ namespace TextureToolkit
     // ops and one store instead of eight byte accesses, and it vectorises.
     static void upload_level(const D3DLOCKED_RECT &rect, const DirectX::Image &level, bool swizzle)
     {
+        if (rect.pBits == nullptr || rect.Pitch <= 0)
+            return;
+
         uint8_t *dest = static_cast<uint8_t *>(rect.pBits);
         const UINT dest_pitch = static_cast<UINT>(rect.Pitch);
         const UINT src_pitch = static_cast<UINT>(level.rowPitch);
@@ -351,7 +354,7 @@ namespace TextureToolkit
             D3DLOCKED_RECT lr = {};
             if (dxgi != DXGI_FORMAT_UNKNOWN && SUCCEEDED(tex->LockRect(0, &lr, nullptr, D3DLOCK_READONLY)))
             {
-                if (lr.pBits != nullptr)
+                if (lr.pBits != nullptr && lr.Pitch > 0)
                     path = write_dump_dds(hash, sd.Width, sd.Height, dxgi, {copy_level(dxgi, sd.Height, lr.pBits, lr.Pitch)});
                 tex->UnlockRect(0);
             }
@@ -368,6 +371,13 @@ namespace TextureToolkit
                         if (SUCCEEDED(dev->GetRenderTargetData(src, dst)) &&
                             SUCCEEDED(dst->LockRect(&lr2, nullptr, D3DLOCK_READONLY)))
                         {
+                            if (lr2.pBits == nullptr || lr2.Pitch <= 0)
+                            {
+                                dst->UnlockRect();
+                                dst->Release();
+                                src->Release();
+                                return {};
+                            }
                             path = write_dump_dds(hash, sd.Width, sd.Height, dxgi, {copy_level(dxgi, sd.Height, lr2.pBits, lr2.Pitch)});
                             dst->UnlockRect();
                         }
