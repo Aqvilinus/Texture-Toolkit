@@ -1,7 +1,6 @@
 #include "render/d3d9/d3d9_format.h"
 #include "texture/texture_hash.h"
 
-#include <vector>
 #include "core/logger.h"
 #include <unordered_set>
 
@@ -157,21 +156,9 @@ namespace TextureToolkit
             return 0;
         }
 
-        const uint8_t *src = static_cast<const uint8_t *>(pixel_data);
-        if (pitch == 0 || pitch == row_bytes)
-            return compute_crc32c(src, static_cast<size_t>(row_bytes) * rows);
-
-        // Row padding is the driver's choice and can be uninitialised, so only the bytes that carry
-        // pixels are hashed -- the same rows Special K hashes, which is what keeps the names shared.
-        std::vector<uint8_t> tight;
-        tight.reserve(static_cast<size_t>(row_bytes) * rows);
-        for (UINT y = 0; y < rows; ++y)
-        {
-            const uint8_t *row = src + static_cast<size_t>(y) * pitch;
-            tight.insert(tight.end(), row, row + row_bytes);
-        }
-
-        return compute_crc32c(tight.data(), tight.size());
+        // The same call the D3D11 side makes: rows only, no copy, and row padding -- the driver's
+        // to choose and undefined where it chose it -- left out, as Special K leaves it out.
+        return compute_crc32c_rows(static_cast<const uint8_t *>(pixel_data), pitch, row_bytes, rows);
     }
 
     DXGI_FORMAT to_dxgi(D3DFORMAT format)

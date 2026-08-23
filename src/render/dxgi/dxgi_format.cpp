@@ -9,12 +9,14 @@
 
 namespace TextureToolkit
 {
-    // The content hash that names every replacement file is taken over exactly slice_pitch bytes,
-    // so this must not drift. The row pitch is the caller's -- for a game texture that is the
-    // game's own SysMemPitch, never one we compute; only the row count comes from the format.
-    uint32_t compute_slice_pitch(DXGI_FORMAT fmt, uint32_t row_pitch, uint32_t height)
+    bool tight_rows(DXGI_FORMAT fmt, uint32_t width, uint32_t height, size_t &row_bytes, size_t &rows)
     {
-        return row_pitch * static_cast<uint32_t>(DirectX::ComputeScanlines(fmt, height));
+        size_t slice = 0;
+        if (FAILED(DirectX::ComputePitch(fmt, width, height, row_bytes, slice)) || row_bytes == 0)
+            return false;
+
+        rows = DirectX::ComputeScanlines(fmt, height);
+        return rows != 0;
     }
 
     uint32_t texture_byte_size(DXGI_FORMAT fmt, uint32_t w, uint32_t h, uint32_t mips)

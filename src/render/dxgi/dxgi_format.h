@@ -10,7 +10,10 @@ namespace DirectX { class ScratchImage; struct TexMetadata; struct Image; }
 
 namespace TextureToolkit
 {
-    uint32_t compute_slice_pitch(DXGI_FORMAT fmt, uint32_t row_pitch, uint32_t height);
+    // The bytes in a row that actually carry pixels, and how many such rows a surface has. What is
+    // between them is the uploader's padding, which the hash must not touch. False when the format
+    // is one DirectXTex cannot measure.
+    bool tight_rows(DXGI_FORMAT fmt, uint32_t width, uint32_t height, size_t &row_bytes, size_t &rows);
     uint32_t texture_byte_size(DXGI_FORMAT fmt, uint32_t w, uint32_t h, uint32_t mips);
     uint32_t full_mip_count(uint32_t w, uint32_t h);
 

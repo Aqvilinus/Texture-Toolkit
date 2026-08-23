@@ -14,18 +14,21 @@ namespace TextureToolkit
     // The counters exist so the diagnostics report can say what hashing costs inside the game's
     // own CreateTexture2D. They were declared and read but never written, so that field of the
     // report was always zero.
-    static uint32_t hash_and_account(TextureManagerBase &manager, const void *pixels, size_t bytes)
+    // Rows only, never the padding between them: that is the uploader's to choose, is undefined
+    // where a driver picked it, and is what Special K leaves out of the value it names packs with.
+    static uint32_t hash_and_account(TextureManagerBase &manager, const void *pixels, size_t row_pitch,
+                                     size_t row_bytes, size_t rows)
     {
 #if TT_DIAGNOSTICS
         LARGE_INTEGER start{};
         QueryPerformanceCounter(&start);
 #endif
-        const uint32_t hash = compute_crc32c(static_cast<const uint8_t *>(pixels), bytes);
+        const uint32_t hash = compute_crc32c_rows(static_cast<const uint8_t *>(pixels), row_pitch, row_bytes, rows);
 #if TT_DIAGNOSTICS
         LARGE_INTEGER end{};
         QueryPerformanceCounter(&end);
         manager.stat_hash_ticks.fetch_add(static_cast<uint64_t>(end.QuadPart - start.QuadPart), std::memory_order_relaxed);
-        manager.stat_hash_bytes.fetch_add(bytes, std::memory_order_relaxed);
+        manager.stat_hash_bytes.fetch_add(row_bytes * rows, std::memory_order_relaxed);
 #else
         (void)manager;
 #endif
@@ -283,11 +286,11 @@ namespace TextureToolkit
         if (device == nullptr || !enable_injection)
             return nullptr;
 
-        const UINT slice_pitch = compute_slice_pitch(desc.Format, initial_data.SysMemPitch, desc.Height);
-        if (slice_pitch == 0)
+        size_t row_bytes = 0, rows = 0;
+        if (!tight_rows(desc.Format, desc.Width, desc.Height, row_bytes, rows))
             return nullptr;
 
-        const uint32_t hash = hash_and_account(*this, initial_data.pSysMem, slice_pitch);
+        const uint32_t hash = hash_and_account(*this, initial_data.pSysMem, initial_data.SysMemPitch, row_bytes, rows);
 
         std::filesystem::path inject_path;
         {
@@ -418,11 +421,11 @@ namespace TextureToolkit
         if (filter_small_textures && (width < 16 || height < 16))
             return;
 
-        const UINT slice_pitch = compute_slice_pitch(format, pitch, height);
-        if (slice_pitch == 0)
+        size_t row_bytes = 0, rows = 0;
+        if (!tight_rows(format, width, height, row_bytes, rows))
             return;
 
-        const uint32_t hash = hash_and_account(*this, pixel_data, slice_pitch);
+        const uint32_t hash = hash_and_account(*this, pixel_data, pitch, row_bytes, rows);
         if (hash == 0)
             return;
 

@@ -196,6 +196,28 @@ namespace TextureToolkit
         return ~crc32c_sw(kSeed, reinterpret_cast<const char *>(data), size);
     }
 
+    uint32_t compute_crc32c_rows(const uint8_t *data, size_t row_pitch, size_t row_bytes, size_t rows)
+    {
+        if (data == nullptr || row_bytes == 0 || rows == 0)
+            return 0;
+
+        if (row_pitch == 0 || row_pitch == row_bytes)
+            return compute_crc32c(data, row_bytes * rows);
+
+        // Chained without inverting between rows, so the result equals a hash of the tight rows
+        // laid end to end -- no copy, and the same value Special K arrives at.
+        const bool hardware = has_hardware_crc32();
+        uint32_t crc = kSeed;
+        for (size_t y = 0; y < rows; ++y)
+        {
+            const uint8_t *row = data + y * row_pitch;
+            crc = hardware ? crc32c_hw(crc, row, row_bytes)
+                           : crc32c_sw(crc, reinterpret_cast<const char *>(row), row_bytes);
+        }
+
+        return ~crc;
+    }
+
     std::string format_hash_hex(uint32_t hash)
     {
         constexpr char digits[] = "0123456789ABCDEF";
