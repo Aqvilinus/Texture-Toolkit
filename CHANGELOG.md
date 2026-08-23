@@ -41,9 +41,7 @@ A menu that redraws the same art every frame went from single-digit fps to the f
   refused, and dumps go through `D3DXSaveTextureToFileW`, which also writes formats our own writer
   has to decline.
 - None of this happens in a game that does not ship D3DX; those keep the lock-based path, which is
-  what covers engines with their own asset formats. There, auto-dump writes the top mip only: the
-  game delivers one level per `LockRect` and nothing says when the chain is complete. Dumping from
-  the panel walks the texture on the device and gets every level either way.
+  what covers engines with their own asset formats.
 
 ## The panel
 
