@@ -49,6 +49,17 @@ namespace TextureToolkit
             it->second.status = status;
     }
 
+    void TextureManagerBase::note_view_format(uint32_t hash, uint32_t format_id, const std::string &name)
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        auto it = m_tracked_textures.find(hash);
+        if (it != m_tracked_textures.end() && it->second.view_format_id == 0)
+        {
+            it->second.view_format_id = format_id;
+            it->second.view_format_str = name;
+        }
+    }
+
     void TextureManagerBase::queue_pending_dump(uint32_t hash)
     {
         m_pending_dumps.insert(hash);

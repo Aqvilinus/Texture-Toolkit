@@ -184,10 +184,20 @@ namespace TextureToolkit
                         details.status = TextureStatus::INJECTED;
                         details.filepath_injected = inject_path.string();
                         details.replacement_handle = reinterpret_cast<uint64_t>(via_d3dx);
-                        details.repl_width = static_cast<uint32_t>(meta.width);
-                        details.repl_height = static_cast<uint32_t>(meta.height);
+
+                        // From the texture, not the file: D3DX converts the format and may rescale
+                        // or pad to what the device accepts, so the file's size is not what exists.
+                        D3DSURFACE_DESC built = {};
+                        if (SUCCEEDED(via_d3dx->GetLevelDesc(0, &built)))
+                        {
+                            details.repl_width = built.Width;
+                            details.repl_height = built.Height;
+                        }
+
                         Logger::get().info("[D3D9Textures] Replacement for 0x" + format_hash_hex(hash) +
-                                           " built by the game's own D3DX (format unsupported here).");
+                                           " built by the game's own D3DX: " +
+                                           std::to_string(details.repl_width) + "x" + std::to_string(details.repl_height) +
+                                           " (no DX9 format for the file's " + format_name(meta.format) + ").");
                         return true;
                     }
 
@@ -256,7 +266,10 @@ namespace TextureToolkit
                                 details.repl_height = static_cast<uint32_t>(meta.height);
                                 created = true;
 
-                                Logger::get().info("[D3D9Textures] Loaded high-res DX9 replacement for 0x");
+                                Logger::get().info("[D3D9Textures] Loaded high-res DX9 replacement for 0x" + format_hash_hex(hash) +
+                                                   " (" + std::to_string(details.repl_width) + "x" + std::to_string(details.repl_height) +
+                                                   ", " + std::to_string(image.GetImageCount()) + " level(s), original had " +
+                                                   std::to_string(original_levels) + ")");
                             }
                             else
                             {
@@ -355,7 +368,33 @@ namespace TextureToolkit
             if (dxgi != DXGI_FORMAT_UNKNOWN && SUCCEEDED(tex->LockRect(0, &lr, nullptr, D3DLOCK_READONLY)))
             {
                 if (lr.pBits != nullptr && lr.Pitch > 0)
-                    path = write_dump_dds(hash, sd.Width, sd.Height, dxgi, {copy_level(dxgi, sd.Height, lr.pBits, lr.Pitch)});
+                {
+                    // Every level, unlike the auto-dump path: there the game delivers one level per
+                    // LockRect and we never learn when the chain is complete, but a texture already
+                    // on the device can simply be walked.
+                    DumpLevels levels;
+                    levels.push_back(copy_level(dxgi, sd.Height, lr.pBits, lr.Pitch));
+
+                    const DWORD level_count = tex->GetLevelCount();
+                    for (DWORD level = 1; level < level_count; ++level)
+                    {
+                        D3DSURFACE_DESC ld = {};
+                        D3DLOCKED_RECT lrn = {};
+                        if (FAILED(tex->GetLevelDesc(level, &ld)) ||
+                            FAILED(tex->LockRect(level, &lrn, nullptr, D3DLOCK_READONLY)))
+                            break;
+
+                        if (lrn.pBits != nullptr && lrn.Pitch > 0)
+                            levels.push_back(copy_level(dxgi, ld.Height, lrn.pBits, lrn.Pitch));
+                        tex->UnlockRect(level);
+
+                        // A short chain is written as far as it goes rather than not at all.
+                        if (levels.size() != level + 1)
+                            break;
+                    }
+
+                    path = write_dump_dds(hash, sd.Width, sd.Height, dxgi, std::move(levels));
+                }
                 tex->UnlockRect(0);
             }
             else if (dxgi != DXGI_FORMAT_UNKNOWN && (sd.Usage & D3DUSAGE_RENDERTARGET))

@@ -112,6 +112,11 @@ namespace TextureToolkit
 
         std::vector<TextureDetails> get_active_textures();
 
+        // How the game samples this texture, which is what reveals the sRGB intent a TYPELESS
+        // resource hides. Called by the view-creation hook, so once per view rather than on every
+        // bind the way upstream did it. Takes m_mutex.
+        void note_view_format(uint32_t hash, uint32_t format_id, const std::string &name);
+
         // Live original-texture preview. The UI names one hash as the preview target; the
         // next time that texture is bound we take a COM reference to the exact resource the
         // game is using, so the preview stays valid even under pointer reuse and cannot be

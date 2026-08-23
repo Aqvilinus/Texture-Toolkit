@@ -5,6 +5,7 @@
 #include "core/hook_manager.h"
 #include "core/iat_hook.h"
 #include "render/d3d11/d3d11_textures.h"
+#include "render/dxgi/dxgi_format.h"
 #include "ui/overlay.h"
 #include "core/config.h"
 #include <DirectXTex.h>
@@ -236,7 +237,18 @@ namespace TextureToolkit
                 return;
 
             D3D11TextureManager &tm = D3D11TextureManager::get();
-            tm.register_owned_view(*view, tm.resource_hash(resource));
+            const uint32_t hash = tm.resource_hash(resource);
+            tm.register_owned_view(*view, hash);
+
+            // Safe to take the manager lock here: our own views are created with the injection
+            // guard set and never reach this line, so this is only ever the game creating one.
+            if (hash != 0)
+            {
+                D3D11_SHADER_RESOURCE_VIEW_DESC vd = {};
+                (*view)->GetDesc(&vd);
+                if (vd.Format != DXGI_FORMAT_UNKNOWN)
+                    tm.note_view_format(hash, static_cast<uint32_t>(vd.Format), format_name(vd.Format));
+            }
         }
     }
 

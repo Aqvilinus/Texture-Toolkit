@@ -29,8 +29,9 @@ Much of what follows is inspired by [Special K](https://github.com/SpecialKO/Spe
 - **A DDS added while the game runs reaches only hashes that already have a replacement** -- Reload
   copies the new contents into the textures the game is holding. A hash that had no replacement
   yet, or a file whose size, format or mip count changed, needs a restart.
-- **D3D9 dumps carry the top mip only.** Full mip chains and array slices come from the D3D11
-  readback path.
+- **D3D9 auto-dump carries the top mip only.** The game delivers one level per `LockRect` and
+  nothing says when the chain is complete, so only level 0 is kept; dumping from the panel walks
+  the texture on the device and gets every level.
 
 ## Hashing
 
