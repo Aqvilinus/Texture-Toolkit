@@ -461,19 +461,20 @@ namespace TextureToolkit
         {
             // Every level the game uploaded, not just the first: this is the one moment the whole
             // chain is in hand, and a dump taken from it matches what the game loaded.
-            DumpLevels levels;
-            for (UINT level = 0; level < mip_levels; ++level)
+            const UINT levels = (initial_data != nullptr) ? mip_levels : 1;
+            DirectX::ScratchImage image = make_dump_image(format, width, height, levels);
+
+            bool complete = image.GetImageCount() != 0;
+            for (UINT level = 0; complete && level < levels; ++level)
             {
                 const void *pixels = (initial_data != nullptr) ? initial_data[level].pSysMem : pixel_data;
                 const UINT row = (initial_data != nullptr) ? initial_data[level].SysMemPitch : pitch;
-                const UINT h = (std::max)(1u, height >> level);
-                levels.push_back(copy_level(format, h, pixels, row));
-                if (initial_data == nullptr)
-                    break;
+                complete = copy_level(image, level, pixels, row);
             }
 
             // The status follows the file: the writer thread sets it once the DDS is on disk.
-            dump_texture(hash, width, height, format, std::move(levels));
+            if (complete)
+                dump_texture(hash, std::move(image));
         }
 
         return hash;

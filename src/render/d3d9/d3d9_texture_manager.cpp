@@ -129,7 +129,9 @@ namespace TextureToolkit
             DXGI_FORMAT dxgi_fmt = to_dxgi(format);
             if (dxgi_fmt != DXGI_FORMAT_UNKNOWN)
             {
-                dump_texture(hash, width, height, dxgi_fmt, {copy_level(dxgi_fmt, height, pixel_data, pitch)});
+                DirectX::ScratchImage image = make_dump_image(dxgi_fmt, width, height, 1);
+                if (copy_level(image, 0, pixel_data, pitch))
+                    dump_texture(hash, std::move(image));
             }
         }
 
@@ -507,28 +509,33 @@ namespace TextureToolkit
                     // Every level, unlike the auto-dump path: there the game delivers one level per
                     // LockRect and we never learn when the chain is complete, but a texture already
                     // on the device can simply be walked.
-                    DumpLevels levels;
-                    levels.push_back(copy_level(dxgi, sd.Height, lr.pBits, lr.Pitch));
-
                     const DWORD level_count = tex->GetLevelCount();
-                    for (DWORD level = 1; level < level_count; ++level)
+                    DirectX::ScratchImage image = make_dump_image(dxgi, sd.Width, sd.Height, level_count);
+
+                    bool complete = copy_level(image, 0, lr.pBits, lr.Pitch);
+                    for (DWORD level = 1; complete && level < level_count; ++level)
                     {
-                        D3DSURFACE_DESC ld = {};
                         D3DLOCKED_RECT lrn = {};
-                        if (FAILED(tex->GetLevelDesc(level, &ld)) ||
-                            FAILED(tex->LockRect(level, &lrn, nullptr, D3DLOCK_READONLY)))
+                        if (FAILED(tex->LockRect(level, &lrn, nullptr, D3DLOCK_READONLY)))
+                        {
+                            complete = false;
                             break;
+                        }
 
-                        if (lrn.pBits != nullptr && lrn.Pitch > 0)
-                            levels.push_back(copy_level(dxgi, ld.Height, lrn.pBits, lrn.Pitch));
+                        complete = copy_level(image, level, lrn.pBits, lrn.Pitch);
                         tex->UnlockRect(level);
-
-                        // A short chain is written as far as it goes rather than not at all.
-                        if (levels.size() != level + 1)
-                            break;
                     }
 
-                    path = write_dump_dds(hash, sd.Width, sd.Height, dxgi, std::move(levels));
+                    // A chain we could not read in full is written as its top level rather than
+                    // not at all -- the levels are one allocation, so it is remade to fit.
+                    if (!complete)
+                    {
+                        image = make_dump_image(dxgi, sd.Width, sd.Height, 1);
+                        complete = copy_level(image, 0, lr.pBits, lr.Pitch);
+                    }
+
+                    if (complete)
+                        path = write_dump_dds(hash, image);
                 }
                 tex->UnlockRect(0);
             }
@@ -553,7 +560,9 @@ namespace TextureToolkit
                                 tex->Release();
                                 return {};
                             }
-                            path = write_dump_dds(hash, sd.Width, sd.Height, dxgi, {copy_level(dxgi, sd.Height, lr2.pBits, lr2.Pitch)});
+                            DirectX::ScratchImage image = make_dump_image(dxgi, sd.Width, sd.Height, 1);
+                            if (copy_level(image, 0, lr2.pBits, lr2.Pitch))
+                                path = write_dump_dds(hash, image);
                             dst->UnlockRect();
                         }
                         dst->Release();

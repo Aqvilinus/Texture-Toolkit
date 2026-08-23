@@ -5,37 +5,64 @@
 
 #include <DirectXTex.h>
 #include <algorithm>
-#include <ranges>
+#include <cstring>
 
 namespace TextureToolkit
 {
-    TextureManagerBase::DumpLevel TextureManagerBase::copy_level(DXGI_FORMAT format, UINT height, const void *pixels, UINT row_pitch)
+    DirectX::ScratchImage TextureManagerBase::make_dump_image(DXGI_FORMAT format, UINT width, UINT height, UINT mip_levels)
     {
-        TextureManagerBase::DumpLevel level;
-        level.row_pitch = row_pitch;
-        const size_t rows = DirectX::ComputeScanlines(format, height);
-        if (pixels != nullptr && rows != 0 && row_pitch != 0)
-        {
-            const uint8_t *src = static_cast<const uint8_t *>(pixels);
-            level.data.assign(src, src + row_pitch * rows);
-        }
-        return level;
+        DirectX::ScratchImage image;
+
+        // A TYPELESS .dds is neither viewable nor re-injectable, so the concrete format is decided
+        // here, before anything is copied in.
+        DirectX::TexMetadata meta = {};
+        meta.width = width;
+        meta.height = height;
+        meta.depth = 1;
+        meta.arraySize = 1;
+        meta.mipLevels = (mip_levels == 0) ? 1 : mip_levels;
+        meta.format = resolve_typeless(format);
+        meta.dimension = DirectX::TEX_DIMENSION_TEXTURE2D;
+
+        if (width == 0 || height == 0 || FAILED(image.Initialize(meta)))
+            image.Release();
+
+        return image;
     }
 
-    bool TextureManagerBase::dump_texture(uint32_t hash, UINT width, UINT height, DXGI_FORMAT format, DumpLevels levels)
+    bool TextureManagerBase::copy_level(DirectX::ScratchImage &image, size_t level, const void *pixels, size_t row_pitch)
     {
-        if (levels.empty() || width == 0 || height == 0)
+        const DirectX::Image *dst = image.GetImage(level, 0, 0);
+        if (dst == nullptr || dst->pixels == nullptr || pixels == nullptr || row_pitch == 0)
             return false;
 
-        if (std::ranges::any_of(levels, [](const DumpLevel &level) { return level.row_pitch == 0 || level.data.empty(); }))
+        // A source row shorter than the format demands cannot be padded into a correct image, and
+        // the old code's min() quietly wrote one anyway.
+        if (row_pitch < dst->rowPitch)
+            return false;
+
+        const size_t rows = DirectX::ComputeScanlines(dst->format, dst->height);
+        const uint8_t *src = static_cast<const uint8_t *>(pixels);
+        uint8_t *out = dst->pixels;
+
+        for (size_t row = 0; row < rows; ++row)
+        {
+            std::memcpy(out, src, dst->rowPitch);
+            src += row_pitch;
+            out += dst->rowPitch;
+        }
+
+        return true;
+    }
+
+    bool TextureManagerBase::dump_texture(uint32_t hash, DirectX::ScratchImage &&image)
+    {
+        if (hash == 0 || image.GetImageCount() == 0)
             return false;
 
         DumpRequest req;
         req.hash = hash;
-        req.width = width;
-        req.height = height;
-        req.format = format;
-        req.levels = std::move(levels);
+        req.image = std::move(image);
 
         {
             std::lock_guard<std::mutex> lock(m_dump_mutex);
@@ -45,48 +72,14 @@ namespace TextureToolkit
         return true;
     }
 
-    std::string TextureManagerBase::write_dump_dds(uint32_t hash, UINT width, UINT height, DXGI_FORMAT format,
-                                               const DumpLevels &levels)
+    std::string TextureManagerBase::write_dump_dds(uint32_t hash, const DirectX::ScratchImage &image)
     {
-        if (levels.empty() || width == 0 || height == 0)
+        if (image.GetImageCount() == 0)
             return {};
-
-        // A TYPELESS .dds is neither viewable nor re-injectable.
-        format = resolve_typeless(format);
-
-        DirectX::TexMetadata meta = {};
-        meta.width = width;
-        meta.height = height;
-        meta.depth = 1;
-        meta.arraySize = 1;
-        meta.mipLevels = levels.size();
-        meta.format = format;
-        meta.dimension = DirectX::TEX_DIMENSION_TEXTURE2D;
-
-        // Described where it already sits rather than copied into a ScratchImage first. The writer
-        // takes each row's worth of pixels and steps the source by its own pitch, so the padding
-        // the game uploaded with is dropped on the way out -- which is what the copy used to do,
-        // for the price of a second full-size buffer and a second pass over every level.
-        std::vector<DirectX::Image> images(levels.size());
-        for (size_t level = 0; level < levels.size(); ++level)
-        {
-            if (levels[level].data.empty() || levels[level].row_pitch == 0)
-                return {};
-
-            DirectX::Image &img = images[level];
-            img.width = (std::max)(size_t{1}, static_cast<size_t>(width) >> level);
-            img.height = (std::max)(size_t{1}, static_cast<size_t>(height) >> level);
-            img.format = format;
-            img.rowPitch = levels[level].row_pitch;
-            img.slicePitch = levels[level].data.size();
-            img.pixels = const_cast<uint8_t *>(levels[level].data.data());
-        }
 
         const std::filesystem::path dds_path = dump_path_for(hash);
 
-        // A source row shorter than the format demands is refused rather than written out padded
-        // with whatever was in the buffer, which is what the old copy did silently.
-        const HRESULT hr = DirectX::SaveToDDSFile(images.data(), images.size(), meta,
+        const HRESULT hr = DirectX::SaveToDDSFile(image.GetImages(), image.GetImageCount(), image.GetMetadata(),
                                                   DirectX::DDS_FLAGS_NONE, dds_path.wstring().c_str());
         if (FAILED(hr))
         {
@@ -130,7 +123,7 @@ namespace TextureToolkit
                 m_dump_queue.pop_front();
             }
 
-            std::string path = write_dump_dds(req.hash, req.width, req.height, req.format, req.levels);
+            std::string path = write_dump_dds(req.hash, req.image);
             if (!path.empty())
             {
                 note_dumped(req.hash, path);

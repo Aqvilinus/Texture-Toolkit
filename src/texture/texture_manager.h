@@ -11,6 +11,8 @@
 #include <thread>
 #include <condition_variable>
 #include <stop_token>
+#include <DirectXTex.h>
+
 #include <atomic>
 #include <memory>
 #include <wrl/client.h>
@@ -171,19 +173,17 @@ namespace TextureToolkit
         // live handle, so it is safe against pointer reuse). Returns the number queued.
         size_t dump_all(bool scene_only);
 
-        // Queues an async dump from CPU pixel data already in hand (used by auto-dump).
-        struct DumpLevel
-        {
-            std::vector<uint8_t> data;
-            UINT row_pitch = 0;
-        };
-        using DumpLevels = std::vector<DumpLevel>;
+        // Somewhere to put the levels of a texture that is about to be dumped: one allocation for
+        // the whole chain, and every level's size, format and pitch carried with the pixels instead
+        // of alongside them. Empty on a format or shape DirectXTex declines.
+        static DirectX::ScratchImage make_dump_image(DXGI_FORMAT format, UINT width, UINT height, UINT mip_levels);
 
-        bool dump_texture(uint32_t hash, UINT width, UINT height, DXGI_FORMAT format, DumpLevels levels);
+        // Copies one level in, from a source laid out at its own pitch. The row count comes from
+        // the format, so a block-compressed surface copies block rows rather than pixel rows.
+        static bool copy_level(DirectX::ScratchImage &image, size_t level, const void *pixels, size_t row_pitch);
 
-        // Copies one upload level into an owned buffer. The row count comes from the format, so a
-        // block-compressed surface copies block rows rather than pixel rows.
-        static DumpLevel copy_level(DXGI_FORMAT format, UINT height, const void *pixels, UINT row_pitch);
+        // Queues an async dump of pixels already in hand (used by auto-dump).
+        bool dump_texture(uint32_t hash, DirectX::ScratchImage &&image);
 
 
         struct PendingReadback
@@ -280,10 +280,7 @@ namespace TextureToolkit
         struct DumpRequest
         {
             uint32_t hash = 0;
-            UINT width = 0;
-            UINT height = 0;
-            DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
-            DumpLevels levels;
+            DirectX::ScratchImage image;
         };
 
         std::deque<DumpRequest> m_dump_queue;
@@ -293,9 +290,9 @@ namespace TextureToolkit
 
         void dump_worker_loop(std::stop_token stop);
 
-        // Writes a single-mip DDS to TT/dump from CPU pixel data. Returns the file path, or
-        // empty on failure. Does not touch tracked state; the caller updates status.
-        std::string write_dump_dds(uint32_t hash, UINT width, UINT height, DXGI_FORMAT format, const DumpLevels &levels);
+        // Writes a DDS to TT/dump. Returns the file path, or empty on failure. Does not touch
+        // tracked state; the caller updates status.
+        std::string write_dump_dds(uint32_t hash, const DirectX::ScratchImage &image);
 
 
         // Bulk-dump plumbing (see dump_all). m_pending_dumps holds hashes waiting to be
