@@ -7,6 +7,7 @@
 #include "core/config.h"
 #include "input/input_hook.h"
 #include "core/logger.h"
+#include "core/scoped_flag.h"
 #include <imgui.h>
 #include "imgui_impl_win32.h"
 #include "imgui_impl_dx9.h"
@@ -231,15 +232,13 @@ namespace TextureToolkit
 
     // --- Presentation ---
 
+    thread_local bool D3D9Hook::s_presenting = false;
+
     void D3D9Hook::present_frame(IDirect3DDevice9 *device, PresentSource source)
     {
-        // The device call reaches the swapchain internally, so only the outermost call owns the
-        // frame. Thread local, or a game presenting from two threads suppresses its own overlay.
-        static thread_local bool s_presenting = false;
-        if (s_presenting || device == nullptr)
+        if (device == nullptr)
             return;
 
-        s_presenting = true;
         m_device = device;
 
         static bool s_logged[3] = {};
@@ -252,23 +251,34 @@ namespace TextureToolkit
         }
 
         render_imgui(device);
-        s_presenting = false;
     }
 
     HRESULT STDMETHODCALLTYPE D3D9Hook::Hooked_Present(IDirect3DDevice9 *device, const RECT *pSourceRect, const RECT *pDestRect, HWND hDestWindowOverride, const RGNDATA *pDirtyRegion)
     {
+        if (s_presenting)
+            return get().m_orig_present(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
+
+        ScopedFlag presenting(s_presenting);
         get().present_frame(device, PresentSource::Device);
         return get().m_orig_present(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
     }
 
     HRESULT STDMETHODCALLTYPE D3D9Hook::Hooked_PresentEx(IDirect3DDevice9Ex *device, const RECT *pSourceRect, const RECT *pDestRect, HWND hDestWindowOverride, const RGNDATA *pDirtyRegion, DWORD dwFlags)
     {
+        if (s_presenting)
+            return get().m_orig_present_ex(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
+
+        ScopedFlag presenting(s_presenting);
         get().present_frame(device, PresentSource::DeviceEx);
         return get().m_orig_present_ex(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
     }
 
     HRESULT STDMETHODCALLTYPE D3D9Hook::Hooked_SwapChainPresent(IDirect3DSwapChain9 *swapchain, const RECT *pSourceRect, const RECT *pDestRect, HWND hDestWindowOverride, const RGNDATA *pDirtyRegion, DWORD dwFlags)
     {
+        if (s_presenting)
+            return get().m_orig_swapchain_present(swapchain, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
+
+        ScopedFlag presenting(s_presenting);
         get().present_frame(get().m_device, PresentSource::SwapChain);
         return get().m_orig_swapchain_present(swapchain, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
     }
@@ -593,6 +603,15 @@ namespace TextureToolkit
 
     void D3D9Hook::render_imgui(IDirect3DDevice9 *device)
     {
+        // Same gate as the D3D11 side. Without it the panel still opened here -- the hotkey poll
+        // falls back to the unhooked GetAsyncKeyState -- while the input detours it needs were
+        // never installed, so the game went on receiving every keystroke typed into it.
+        if (!ConfigManager::get().get_config().enable_overlay)
+        {
+            D3D9TextureManager::get().on_frame();
+            return;
+        }
+
         if (!m_imgui_initialized)
         {
             init_imgui(device);

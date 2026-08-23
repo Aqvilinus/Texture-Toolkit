@@ -73,6 +73,11 @@ namespace TextureToolkit
         // All three entry points funnel here, so the frame is drawn once.
         void present_frame(IDirect3DDevice9 *device, PresentSource source);
 
+        // Held across the original Present, not just around our drawing: the device call reaches
+        // the swapchain internally, and without that span the inner call counts as a second frame.
+        // Thread local, or a game presenting from two threads suppresses its own overlay.
+        static thread_local bool s_presenting;
+
         Present_fn m_orig_present = nullptr;
         PresentEx_fn m_orig_present_ex = nullptr;
         SwapChainPresent_fn m_orig_swapchain_present = nullptr;
