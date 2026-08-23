@@ -20,7 +20,9 @@ namespace TextureToolkit
         void register_texture11(ID3D11Device *device, ID3D11Resource *resource, const void *pixel_data,
                                 UINT width, UINT height, DXGI_FORMAT format, UINT pitch,
                                 const D3D11_SUBRESOURCE_DATA *initial_data = nullptr, UINT mip_levels = 1);
-        uint32_t note_referenced(void *resource);   // 0 when the pointer is not one of ours
+        // 0 when the pointer is not one of ours. Fills override_out with the view to substitute
+        // for this one, when there is one: the caller has already paid for the slot lookup.
+        uint32_t note_referenced(void *resource, void **override_out = nullptr);
         void pin_preview_view(ID3D11ShaderResourceView *view);
         void note_dump_candidate(ID3D11ShaderResourceView *view, uint32_t hash);
         void register_owned_view(void *view, uint32_t hash);
@@ -43,6 +45,12 @@ namespace TextureToolkit
         uint64_t upload_file_preview(const DirectX::Image &image) override;
         void release_branch_replacements() override;
         bool branch_has_replacement(uint32_t hash) const override { return m_d3d11.injected.contains(hash); }
+
+        // One replacement per frame, built off the draw call that asked for it.
+        void process_branch_injections() override;
+
+        // Points every known view of this hash at a replacement view. m_d3d11.mutex held.
+        void apply_override_locked(uint32_t hash, ID3D11ShaderResourceView *view);
         void release_branch_preview() override;
         void release_branch_file_preview() override;
 
@@ -52,6 +60,11 @@ namespace TextureToolkit
             // Replacements already built. Games recreate the same texture often, and without this
             // every one would re-read the DDS from disk inside the game's own CreateTexture2D.
             std::unordered_map<uint32_t, Microsoft::WRL::ComPtr<ID3D11Texture2D>> injected;
+
+            // Views built for a replacement that arrived after the game had already made its
+            // texture. Held here because the table below stores them as raw pointers, and the
+            // render thread may be reading one at any moment.
+            std::unordered_map<uint32_t, Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>> override_views;
             Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> preview;
             Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> file_preview;
 
@@ -63,6 +76,12 @@ namespace TextureToolkit
                 std::unique_ptr<std::atomic<void *>[]> slots;
                 std::unique_ptr<uint32_t[]> hashes;
                 std::unique_ptr<std::atomic<uint64_t>[]> last_used;
+
+                // The view to hand the game instead of this one, or null. This is what a
+                // replacement built after the game already created its texture rides on: the
+                // original is never touched, so its immutable usage is no obstacle.
+                std::unique_ptr<std::atomic<void *>[]> overrides;
+
                 size_t mask = 0;
                 size_t count = 0;
             };

@@ -43,6 +43,7 @@ namespace TextureToolkit
         owned->slots = std::make_unique<std::atomic<void *>[]>(capacity);
         owned->hashes = std::make_unique<uint32_t[]>(capacity);
         owned->last_used = std::make_unique<std::atomic<uint64_t>[]>(capacity);
+        owned->overrides = std::make_unique<std::atomic<void *>[]>(capacity);
         owned->mask = capacity - 1;
 
         if (const D3D11State::OwnedSet *previous = m_d3d11.snapshot.load(std::memory_order_acquire))
@@ -59,6 +60,8 @@ namespace TextureToolkit
 
                 owned->hashes[j] = previous->hashes[i];
                 owned->last_used[j].store(previous->last_used[i].load(std::memory_order_relaxed),
+                                          std::memory_order_relaxed);
+                owned->overrides[j].store(previous->overrides[i].load(std::memory_order_relaxed),
                                           std::memory_order_relaxed);
                 owned->slots[j].store(key, std::memory_order_relaxed);
                 owned->count++;
@@ -110,6 +113,7 @@ namespace TextureToolkit
         // pointer sees a hash that belongs to it.
         owned->hashes[i] = hash;
         owned->last_used[i].store(0, std::memory_order_relaxed);
+        owned->overrides[i].store(nullptr, std::memory_order_relaxed);
         owned->slots[i].store(key, std::memory_order_release);
         owned->count++;
     }
@@ -120,7 +124,7 @@ namespace TextureToolkit
         grow_locked(64, false);
     }
 
-    uint32_t D3D11TextureManager::note_referenced(void *resource)
+    uint32_t D3D11TextureManager::note_referenced(void *resource, void **override_out)
     {
         const D3D11State::OwnedSet *owned = m_d3d11.snapshot.load(std::memory_order_acquire);
         if (owned == nullptr || resource == nullptr)
@@ -135,6 +139,8 @@ namespace TextureToolkit
             if (slot == resource)
             {
                 owned->last_used[i].store(frame_ticks(), std::memory_order_relaxed);
+                if (override_out != nullptr)
+                    *override_out = owned->overrides[i].load(std::memory_order_acquire);
                 return owned->hashes[i];
             }
             i = (i + 1) & owned->mask;
@@ -151,6 +157,30 @@ namespace TextureToolkit
         std::lock_guard<std::mutex> lock(m_d3d11.mutex);
         m_d3d11.views.insert_or_assign(view, hash);
         insert_owned_locked(view, hash);
+
+        // A view created after the replacement was built has to inherit it, or the game would
+        // draw the original through a view we never saw at the time.
+        if (auto it = m_d3d11.override_views.find(hash); it != m_d3d11.override_views.end())
+            apply_override_locked(hash, it->second.Get());
+    }
+
+    void D3D11TextureManager::apply_override_locked(uint32_t hash, ID3D11ShaderResourceView *view)
+    {
+        const D3D11State::OwnedSet *current = m_d3d11.snapshot.load(std::memory_order_acquire);
+        if (current == nullptr || hash == 0)
+            return;
+
+        D3D11State::OwnedSet *owned = const_cast<D3D11State::OwnedSet *>(current);
+        for (size_t i = 0; i <= owned->mask; ++i)
+        {
+            void *slot = owned->slots[i].load(std::memory_order_relaxed);
+
+            // Not onto the replacement's own view: it would substitute itself for itself.
+            if (slot == nullptr || slot == view || owned->hashes[i] != hash)
+                continue;
+
+            owned->overrides[i].store(view, std::memory_order_release);
+        }
     }
 
     void D3D11TextureManager::pin_preview_view(ID3D11ShaderResourceView *view)
@@ -398,6 +428,98 @@ namespace TextureToolkit
         }
     }
 
+    // A file that turned up for a hash the game has already created its texture for. Copying into
+    // that texture is what refresh_injected_contents does below, and it is limited to a file of the
+    // same shape -- and refused outright on the immutable usage most game art is created with. So
+    // the original is left alone and a view of our own is put in front of it at bind time instead,
+    // which is what Special K's D3D9 texture wrapper does one level lower down.
+    //
+    // One per frame, off the draw call that wanted it: reading a DDS and creating a texture inside
+    // Present is the hitch this design exists to avoid.
+    void D3D11TextureManager::process_branch_injections()
+    {
+        ID3D11Device *device = RenderBackend::get().d3d11_device();
+        if (device == nullptr)
+            return;
+
+        uint32_t hash = 0;
+        {
+            for (auto it = m_pending_injections.begin(); it != m_pending_injections.end(); ++it)
+            {
+                if (it->second)   // is_dx11
+                {
+                    hash = it->first;
+                    m_pending_injections.erase(it);
+                    break;
+                }
+            }
+        }
+
+        if (hash == 0)
+            return;
+
+        const std::filesystem::path path = find_injection_path_locked(hash);
+        if (path.empty())
+            return;
+
+        DirectX::ScratchImage image;
+        DirectX::TexMetadata meta = {};
+        if (!load_dds(path.string(), true, image, meta))
+        {
+            m_failed_injections.insert(hash);
+            return;
+        }
+
+        Microsoft::WRL::ComPtr<ID3D11Resource> resource;
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> view;
+        {
+            ScopedFlag injecting(D3D11Hook::s_inside_injection);
+
+            if (FAILED(DirectX::CreateTexture(device, image.GetImages(), image.GetImageCount(), meta, &resource)) ||
+                resource == nullptr)
+            {
+                m_failed_injections.insert(hash);
+                return;
+            }
+
+            // The game's own view format decides sRGB, not the file: it picked how to sample this
+            // texture and the replacement is standing in for it.
+            D3D11_SHADER_RESOURCE_VIEW_DESC vd = {};
+            vd.Format = meta.format;
+            if (auto it = m_tracked_textures.find(hash); it != m_tracked_textures.end() && it->second.view_format_id != 0)
+            {
+                const DXGI_FORMAT wanted = static_cast<DXGI_FORMAT>(it->second.view_format_id);
+                vd.Format = DirectX::IsSRGB(wanted) ? DirectX::MakeSRGB(meta.format) : meta.format;
+            }
+            vd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+            vd.Texture2D.MipLevels = static_cast<UINT>(-1);
+
+            if (FAILED(device->CreateShaderResourceView(resource.Get(), &vd, &view)) || view == nullptr)
+            {
+                m_failed_injections.insert(hash);
+                return;
+            }
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(m_d3d11.mutex);
+            m_d3d11.override_views[hash] = view;
+            apply_override_locked(hash, view.Get());
+        }
+
+        if (auto it = m_tracked_textures.find(hash); it != m_tracked_textures.end())
+        {
+            it->second.status = TextureStatus::INJECTED;
+            it->second.filepath_injected = path.string();
+            it->second.repl_width = static_cast<uint32_t>(meta.width);
+            it->second.repl_height = static_cast<uint32_t>(meta.height);
+        }
+
+        Logger::get().info("[D3D11Textures] Applied 0x" + format_hash_hex(hash) +
+                           " to a texture the game had already created (" +
+                           std::to_string(meta.width) + "x" + std::to_string(meta.height) + ").");
+    }
+
     // The game is already holding these textures and will never ask for them again, so the new file
     // has to be copied into the texture it already has. Special K solves it the same way, which is
     // why it refuses immutable usage on them.
@@ -412,6 +534,19 @@ namespace TextureToolkit
         {
             std::lock_guard<std::mutex> lock(m_mutex);
             live.assign(m_d3d11.injected.begin(), m_d3d11.injected.end());
+
+            // A file for a hash the game created before this file existed: nothing to copy into,
+            // so it is queued for a replacement view instead, one per frame.
+            for (const auto &[hash, details] : m_tracked_textures)
+            {
+                if (m_injected_files.contains(hash) &&
+                    !m_d3d11.injected.contains(hash) &&
+                    !m_d3d11.override_views.contains(hash) &&
+                    !m_failed_injections.contains(hash))
+                {
+                    m_pending_injections.insert_or_assign(hash, /*is_dx11=*/true);
+                }
+            }
         }
 
         size_t refreshed = 0;
@@ -571,8 +706,12 @@ namespace TextureToolkit
     void D3D11TextureManager::release_branch_replacements()
     {
         m_d3d11.injected.clear();
+
+        // After reset_owned: the table is what the render thread reads, and dropping these views
+        // while a slot still points at one would leave it reading a freed interface.
         m_d3d11.views.clear();
         reset_owned();
+        m_d3d11.override_views.clear();
     }
 
     void D3D11TextureManager::release_branch_file_preview()

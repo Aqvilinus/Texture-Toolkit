@@ -356,14 +356,30 @@ namespace TextureToolkit
     void STDMETHODCALLTYPE D3D11Hook::Hooked_PSSetShaderResources(ID3D11DeviceContext *context, UINT StartSlot,
                                                                  UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews)
     {
-        if (ppShaderResourceViews != nullptr)
+        ID3D11ShaderResourceView *patched[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT];
+        bool substituted = false;
+
+        if (ppShaderResourceViews != nullptr && NumViews <= ARRAYSIZE(patched))
         {
             D3D11TextureManager &tm = D3D11TextureManager::get();
             for (UINT i = 0; i < NumViews; ++i)
             {
-                const uint32_t hash = tm.note_referenced(ppShaderResourceViews[i]);
+                void *replacement = nullptr;
+                const uint32_t hash = tm.note_referenced(ppShaderResourceViews[i], &replacement);
                 if (hash == 0)
                     continue;
+
+                // A replacement built after the game made its texture rides on the view, since the
+                // texture itself is the game's and usually immutable.
+                if (replacement != nullptr)
+                {
+                    if (!substituted)
+                    {
+                        std::copy_n(ppShaderResourceViews, NumViews, patched);
+                        substituted = true;
+                    }
+                    patched[i] = static_cast<ID3D11ShaderResourceView *>(replacement);
+                }
 
                 if (tm.wants_preview(hash))
                     tm.pin_preview_view(ppShaderResourceViews[i]);
@@ -372,7 +388,8 @@ namespace TextureToolkit
             }
         }
 
-        get().m_orig_ps_set_shader_resources(context, StartSlot, NumViews, ppShaderResourceViews);
+        get().m_orig_ps_set_shader_resources(context, StartSlot, NumViews,
+                                             substituted ? patched : ppShaderResourceViews);
     }
 
     // --- Uploads: a texture created empty and filled afterwards ---

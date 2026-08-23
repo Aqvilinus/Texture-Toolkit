@@ -237,7 +237,6 @@ namespace TextureToolkit
 
 
 
-        void note_pending_injection(uint32_t hash, bool is_dx11);
         void process_pending_injections();
 
         std::unordered_map<uint32_t, bool> m_pending_injections; // hash -> is_dx11
