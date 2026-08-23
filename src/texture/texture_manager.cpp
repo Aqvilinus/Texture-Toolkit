@@ -268,10 +268,53 @@ namespace TextureToolkit
         }
     }
 
-    static bool clash_is_prefixed(const std::filesystem::path &path)
+    // The hash a file name claims, and how plainly it says it. Two spellings are accepted: ours,
+    // which is the whole stem in hex with an optional 0x, and Special K's, which decorates the same
+    // eight digits -- Uncompressed_5D3E2CCE_TYPELESS.dds and the like. The first eight digits are
+    // the top-level CRC in both, which is what everything here keys on.
+    //
+    // rank orders the spellings so a folder holding more than one of them resolves the same way on
+    // every run: plain first, then ours with a prefix, then decorated.
+    static bool parse_hash_from_stem(const std::string &stem, uint32_t &hash, int &rank)
     {
-        const std::string stem = path.stem().string();
-        return stem.starts_with("0x") || stem.starts_with("0X");
+        std::string_view name{stem};
+        rank = 0;
+
+        auto strip_prefix = [&name, &rank](std::string_view prefix, int cost) {
+            if (name.size() > prefix.size() &&
+                std::ranges::equal(name.substr(0, prefix.size()), prefix, {}, [](char c) { return std::tolower(static_cast<unsigned char>(c)); },
+                                   [](char c) { return std::tolower(static_cast<unsigned char>(c)); }))
+            {
+                name.remove_prefix(prefix.size());
+                rank += cost;
+                return true;
+            }
+            return false;
+        };
+
+        if (!strip_prefix("0x", 1))
+        {
+            if (!strip_prefix("uncompressed_", 2))
+                strip_prefix("compressed_", 2);
+        }
+
+        // from_chars rather than stoul: no exception, no allocation, and it stops where the hex
+        // stops instead of silently taking a prefix of something longer.
+        const auto [last, ec] = std::from_chars(name.data(), name.data() + name.size(), hash, 16);
+        if (ec != std::errc{} || last == name.data())
+            return false;
+
+        // What follows the digits must be a decoration, not more name: 5D3E2CCEsomething is not a
+        // hash, while 5D3E2CCE_A1B2C3D4_TYPELESS is the same hash with Special K's trimmings.
+        if (last != name.data() + name.size())
+        {
+            if (*last != '_')
+                return false;
+            rank += 2;
+        }
+
+        // Zero is what the rest of the tool means by "no such texture", so 0.dds names nothing.
+        return hash != 0;
     }
 
     // Off m_mutex: a slow disk, an antivirus or a resource root on a network share would
@@ -302,31 +345,24 @@ namespace TextureToolkit
                 // DDS-only injection for maximum format/compatibility safety.
                 if (ext == ".dds")
                 {
-                    const std::string stem = path.stem().string();
-                    std::string_view digits{stem};
-                    const bool prefixed = digits.starts_with("0x") || digits.starts_with("0X");
-                    if (prefixed)
-                        digits.remove_prefix(2);
-
-                    // from_chars rather than stoul: no exception, no allocation, and it refuses a
-                    // name with anything after the hex instead of silently taking the prefix.
                     uint32_t hash = 0;
-                    const auto [last, parse_ec] = std::from_chars(digits.data(), digits.data() + digits.size(), hash, 16);
-
-                    // Zero is what the rest of the tool means by "no such texture", so 0.dds names
-                    // nothing and would only ever match by accident.
-                    if (parse_ec == std::errc{} && last == digits.data() + digits.size() && hash != 0)
+                    int rank = 0;
+                    if (parse_hash_from_stem(path.stem().string(), hash, rank))
                     {
-                        // 5D3E2CCE.dds and 0x5d3e2cce.dds are the same hash. Which file the
-                        // directory hands back first is not fixed, so the winner is chosen by the
-                        // name instead: the plain form is canonical, and the rest is alphabetical
-                        // -- otherwise the game could load a different file after a restart.
+                        // Which file the directory hands back first is not fixed, so when two name
+                        // one hash the winner is decided by the name: the plainer spelling, then
+                        // alphabetically -- otherwise the game could load the other one after a
+                        // restart.
                         if (auto clash = found.find(hash); clash != found.end())
                         {
                             const std::string kept = clash->second.filename().string();
                             const std::string mine = path.filename().string();
-                            const bool wins = std::pair{prefixed, mine} < std::pair{clash_is_prefixed(clash->second), kept};
 
+                            uint32_t ignored = 0;
+                            int kept_rank = 0;
+                            parse_hash_from_stem(clash->second.stem().string(), ignored, kept_rank);
+
+                            const bool wins = std::pair{rank, mine} < std::pair{kept_rank, kept};
                             Logger::get().warn("[TextureManager] Both " + kept + " and " + mine + " name 0x" +
                                                format_hash_hex(hash) + "; loading " + (wins ? mine : kept) + ".");
                             if (wins)

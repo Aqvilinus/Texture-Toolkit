@@ -29,9 +29,12 @@ A menu that redraws the same art every frame went from single-digit fps to the f
 
 - CRC-32C, on the CPU's own instruction where available, in place of upstream's table-driven
   CRC-32.
-- It is the hash Special K names its packs with, so an SK pack drops in unchanged for ordinary 2D
-  textures. It is not upstream's value, so an existing `dump/` or `inject/` folder has to be
-  renamed.
+- It is the hash Special K names its packs with, and the file names they use are read as they come
+  -- `5D3E2CCE.dds`, `Uncompressed_5D3E2CCE_TYPELESS.dds` and the rest of that family -- so an SK
+  pack for a 2D texture drops in unchanged. It is not upstream's value, so an existing `dump/` or
+  `inject/` folder has to be renamed.
+- Only the bytes that carry pixels are hashed. Row padding belongs to whoever uploaded the texture,
+  is undefined where a driver chose it, and is what Special K leaves out for the same reason.
 
 ## D3DX, where the game has it
 
