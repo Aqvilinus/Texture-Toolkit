@@ -427,6 +427,12 @@ namespace TextureToolkit
         return static_cast<uint64_t>(counter.QuadPart);
     }
 
+    TextureManagerBase::InjectionSummary TextureManagerBase::injection_summary()
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return { m_injected_files.size(), m_failed_injections.size() };
+    }
+
     std::vector<TextureDetails> TextureManagerBase::get_active_textures()
     {
         std::lock_guard<std::mutex> lock(m_mutex);

@@ -112,6 +112,16 @@ namespace TextureToolkit
 
         std::vector<TextureDetails> get_active_textures();
 
+        // Files in inject/ and how many of them the branch could not build anything from. A failed
+        // one leaves its texture looking untouched in the panel, which is indistinguishable from
+        // never having had a file at all.
+        struct InjectionSummary
+        {
+            size_t files = 0;
+            size_t failed = 0;
+        };
+        InjectionSummary injection_summary();
+
         // How the game samples this texture, which is what reveals the sRGB intent a TYPELESS
         // resource hides. Called by the view-creation hook, so once per view rather than on every
         // bind the way upstream did it. Takes m_mutex.

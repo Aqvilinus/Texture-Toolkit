@@ -362,6 +362,17 @@ namespace TextureToolkit
         ImGui::SameLine();
         ImGui::TextColored(kColMuted, "   %.2f MiB", total_bytes / (1024.0 * 1024.0));
 
+        // A file that failed to build leaves its texture reading as untouched, which looks exactly
+        // like never having put a file there.
+        const TextureManagerBase::InjectionSummary inject = tm.injection_summary();
+        if (inject.failed != 0)
+        {
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(0.95f, 0.35f, 0.30f, 1.0f), "   %zu of %zu inject file(s) failed",
+                               inject.failed, inject.files);
+            ImGui::SetItemTooltip("The log says which file and why. Reload tries them again.");
+        }
+
         ImGui::SetNextItemWidth(260.0f);
         ImGui::InputTextWithHint("##filter", "Filter by hash, size or format", s_filter_buf, sizeof(s_filter_buf));
 
