@@ -125,7 +125,7 @@ namespace TextureToolkit
         // How the game samples this texture, which is what reveals the sRGB intent a TYPELESS
         // resource hides. Called by the view-creation hook, so once per view rather than on every
         // bind the way upstream did it. Takes m_mutex.
-        void note_view_format(uint32_t hash, uint32_t format_id, const std::string &name);
+        void note_view_format(uint32_t hash, uint32_t format_id);
 
         // Live original-texture preview. The UI names one hash as the preview target; the
         // next time that texture is bound we take a COM reference to the exact resource the
@@ -152,7 +152,9 @@ namespace TextureToolkit
 
         // Reading back a texture needs a handle that is known to still be alive, and the only
         // moment that is guaranteed is while the game is binding it.
-        bool wants_preview(uint32_t hash) const { return hash != 0 && m_preview_wanted.load(std::memory_order_relaxed) == hash; }
+        // The one hash the panel is showing, or 0. Read once per bind call rather than asked per
+        // view, since the answer cannot change inside one.
+        uint32_t preview_wanted() const { return m_preview_wanted.load(std::memory_order_relaxed); }
 
         // A queued texture can only be read back while the game has it bound, so the bind hook is
         // where the queue is served.
@@ -247,7 +249,6 @@ namespace TextureToolkit
 
 
 
-        void process_pending_injections();
 
         std::unordered_map<uint32_t, bool> m_pending_injections; // hash -> is_dx11
 

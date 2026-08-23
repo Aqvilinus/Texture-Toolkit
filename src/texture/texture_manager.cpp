@@ -49,14 +49,17 @@ namespace TextureToolkit
             it->second.status = status;
     }
 
-    void TextureManagerBase::note_view_format(uint32_t hash, uint32_t format_id, const std::string &name)
+    void TextureManagerBase::note_view_format(uint32_t hash, uint32_t format_id)
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         auto it = m_tracked_textures.find(hash);
         if (it != m_tracked_textures.end() && it->second.view_format_id == 0)
         {
             it->second.view_format_id = format_id;
-            it->second.view_format_str = name;
+
+            // Named here rather than by the caller: a game builds many views onto one texture and
+            // only the first of them gets this far, so the string is built once instead of per view.
+            it->second.view_format_str = format_name(static_cast<DXGI_FORMAT>(format_id));
         }
     }
 

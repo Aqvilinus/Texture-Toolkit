@@ -243,22 +243,23 @@ namespace TextureToolkit
 
             D3D11TextureManager &tm = D3D11TextureManager::get();
             const uint32_t hash = tm.resource_hash(resource);
-            tm.register_owned_view(*view, hash);
 
-            // Safe to take the manager lock here: our own views are created with the injection
-            // guard set and never reach this line, so this is only ever the game creating one.
+            D3D11_SHADER_RESOURCE_VIEW_DESC vd = {};
             if (hash != 0)
             {
-                D3D11_SHADER_RESOURCE_VIEW_DESC vd = {};
                 (*view)->GetDesc(&vd);
-                if (vd.Format != DXGI_FORMAT_UNKNOWN)
-                    tm.note_view_format(hash, static_cast<uint32_t>(vd.Format), format_name(vd.Format));
 
-                // Anything else -- an array, a cube, a 3D volume -- would be sampled through a
-                // replacement that is a plain 2D texture, which is not what the shader asked for.
-                if (vd.ViewDimension != D3D11_SRV_DIMENSION_TEXTURE2D)
-                    tm.forget_owned(*view);
+                // Safe to take the manager lock here: our own views are created with the injection
+                // guard set and never reach this line, so this is only ever the game creating one.
+                if (vd.Format != DXGI_FORMAT_UNKNOWN)
+                    tm.note_view_format(hash, static_cast<uint32_t>(vd.Format));
             }
+
+            // A view onto an array, a cube or a volume is registered as untracked: a replacement is
+            // a plain 2D texture, and sampling one through such a view is not what the shader
+            // asked for. register_owned_view takes zero to mean exactly that.
+            const bool substitutable = vd.ViewDimension == D3D11_SRV_DIMENSION_TEXTURE2D;
+            tm.register_owned_view(*view, substitutable ? hash : 0);
         }
     }
 
@@ -368,16 +369,24 @@ namespace TextureToolkit
     void D3D11Hook::bind_shader_resources(SetShaderResources_fn original, ID3D11DeviceContext *context, UINT StartSlot,
                                           UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews)
     {
-        ID3D11ShaderResourceView *patched[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT];
+        // Reused rather than a local array: a local one puts a stack cookie in the prologue of
+        // every bind, and almost no bind substitutes anything. Per thread, since a game may bind
+        // from more than one.
+        static thread_local ID3D11ShaderResourceView *s_patched[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT];
         bool substituted = false;
 
-        if (ppShaderResourceViews != nullptr && NumViews <= ARRAYSIZE(patched))
+        if (ppShaderResourceViews != nullptr && NumViews <= ARRAYSIZE(s_patched))
         {
             D3D11TextureManager &tm = D3D11TextureManager::get();
+
+            // Both are the same answer for every view in this call, so they are asked once.
+            const bool dumps_pending = tm.has_pending_dumps();
+            const uint32_t preview_wanted = tm.preview_wanted();
+
             for (UINT i = 0; i < NumViews; ++i)
             {
                 void *replacement = nullptr;
-                const uint32_t hash = tm.note_referenced(ppShaderResourceViews[i], &replacement);
+                const uint32_t hash = tm.note_referenced(ppShaderResourceViews[i], replacement);
                 if (hash == 0)
                     continue;
 
@@ -387,20 +396,20 @@ namespace TextureToolkit
                 {
                     if (!substituted)
                     {
-                        std::copy_n(ppShaderResourceViews, NumViews, patched);
+                        std::copy_n(ppShaderResourceViews, NumViews, s_patched);
                         substituted = true;
                     }
-                    patched[i] = static_cast<ID3D11ShaderResourceView *>(replacement);
+                    s_patched[i] = static_cast<ID3D11ShaderResourceView *>(replacement);
                 }
 
-                if (tm.wants_preview(hash))
+                if (hash == preview_wanted)
                     tm.pin_preview_view(ppShaderResourceViews[i]);
-                if (tm.has_pending_dumps())
+                if (dumps_pending)
                     tm.note_dump_candidate(ppShaderResourceViews[i], hash);
             }
         }
 
-        original(context, StartSlot, NumViews, substituted ? patched : ppShaderResourceViews);
+        original(context, StartSlot, NumViews, substituted ? s_patched : ppShaderResourceViews);
     }
 
     void STDMETHODCALLTYPE D3D11Hook::Hooked_PSSetShaderResources(ID3D11DeviceContext *context, UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews)

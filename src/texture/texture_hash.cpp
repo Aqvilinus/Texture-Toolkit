@@ -1,4 +1,6 @@
 #include "texture/texture_hash.h"
+#include <cstring>
+#include <vector>
 
 #include <array>
 #include <nmmintrin.h>
@@ -204,8 +206,29 @@ namespace TextureToolkit
         if (row_pitch == 0 || row_pitch == row_bytes)
             return compute_crc32c(data, row_bytes * rows);
 
+        // Two ways to skip the padding, and which is faster depends on size. Below the threshold
+        // the rows are gathered and hashed in one call, because a call per row is too short to
+        // reach the three-stream path and runs at about half rate; above it the gather costs more
+        // memory bandwidth than it saves. Measured crossover is around a megabyte: at 16 MB the
+        // row walk does 24.5 GB/s against 14.1 for the gather, at 128x128 it is 12.9 against 24.5.
+        constexpr size_t kGatherLimit = 1u << 20;
+
+        const size_t tight_size = row_bytes * rows;
+        if (tight_size <= kGatherLimit)
+        {
+            // Reused rather than allocated per call, and per thread because a game may upload from
+            // several at once.
+            thread_local std::vector<uint8_t> gathered;
+            gathered.resize(tight_size);
+            for (size_t y = 0; y < rows; ++y)
+                std::memcpy(gathered.data() + y * row_bytes, data + y * row_pitch, row_bytes);
+
+            return compute_crc32c(gathered.data(), tight_size);
+        }
+
         // Chained without inverting between rows, so the result equals a hash of the tight rows
-        // laid end to end -- no copy, and the same value Special K arrives at.
+        // laid end to end -- the same value Special K arrives at, and the same one the gather above
+        // produces.
         const bool hardware = has_hardware_crc32();
         uint32_t crc = kSeed;
         for (size_t y = 0; y < rows; ++y)

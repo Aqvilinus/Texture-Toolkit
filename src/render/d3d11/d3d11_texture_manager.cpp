@@ -11,11 +11,9 @@
 
 namespace TextureToolkit
 {
-    // The counters exist so the diagnostics report can say what hashing costs inside the game's
-    // own CreateTexture2D. They were declared and read but never written, so that field of the
-    // report was always zero.
     // Rows only, never the padding between them: that is the uploader's to choose, is undefined
     // where a driver picked it, and is what Special K leaves out of the value it names packs with.
+    // Timed so the diagnostics report can say what this costs inside the game's own CreateTexture2D.
     static uint32_t hash_and_account(TextureManagerBase &manager, const void *pixels, size_t row_pitch,
                                      size_t row_bytes, size_t rows)
     {
@@ -38,6 +36,18 @@ namespace TextureToolkit
     {
         static D3D11TextureManager instance;
         return instance;
+    }
+
+    size_t D3D11TextureManager::probe_slot(const D3D11State::OwnedSet &owned, void *key)
+    {
+        size_t i = (reinterpret_cast<uintptr_t>(key) >> 4) & owned.mask;
+        while (true)
+        {
+            void *slot = owned.slots[i].load(std::memory_order_acquire);
+            if (slot == nullptr || slot == key)
+                return i;
+            i = (i + 1) & owned.mask;
+        }
     }
 
     void D3D11TextureManager::grow_locked(size_t capacity, bool carry_over)
@@ -98,18 +108,11 @@ namespace TextureToolkit
         }
 
         D3D11State::OwnedSet *owned = const_cast<D3D11State::OwnedSet *>(current);
-        size_t i = (reinterpret_cast<uintptr_t>(key) >> 4) & owned->mask;
-        while (true)
+        const size_t i = probe_slot(*owned, key);
+        if (owned->slots[i].load(std::memory_order_relaxed) == key)
         {
-            void *slot = owned->slots[i].load(std::memory_order_relaxed);
-            if (slot == key)
-            {
-                owned->hashes[i] = hash;
-                return;
-            }
-            if (slot == nullptr)
-                break;
-            i = (i + 1) & owned->mask;
+            owned->hashes[i] = hash;
+            return;
         }
 
         // The hash lands before the pointer that makes the slot visible, so a reader that sees the
@@ -123,30 +126,24 @@ namespace TextureToolkit
 
     void D3D11TextureManager::forget_owned(void *key)
     {
+        const D3D11State::OwnedSet *current = m_d3d11.snapshot.load(std::memory_order_acquire);
+        if (current == nullptr || key == nullptr)
+            return;
+
+        // Looked up before the lock is taken: most views the game creates were never ours, and
+        // taking a mutex to discover that would put one on every CreateShaderResourceView.
+        D3D11State::OwnedSet *owned = const_cast<D3D11State::OwnedSet *>(current);
+        const size_t i = probe_slot(*owned, key);
+        if (owned->slots[i].load(std::memory_order_relaxed) != key)
+            return;
+
         std::lock_guard<std::mutex> lock(m_d3d11.mutex);
         m_d3d11.views.erase(key);
 
-        const D3D11State::OwnedSet *current = m_d3d11.snapshot.load(std::memory_order_acquire);
-        if (current == nullptr)
-            return;
-
         // The pointer stays in place: open addressing puts later keys behind it, and removing it
         // would strand them. Zeroing what it names is enough to make it answer "not ours".
-        D3D11State::OwnedSet *owned = const_cast<D3D11State::OwnedSet *>(current);
-        size_t i = (reinterpret_cast<uintptr_t>(key) >> 4) & owned->mask;
-        while (true)
-        {
-            void *slot = owned->slots[i].load(std::memory_order_relaxed);
-            if (slot == nullptr)
-                return;
-            if (slot == key)
-            {
-                owned->overrides[i].store(nullptr, std::memory_order_release);
-                owned->hashes[i] = 0;
-                return;
-            }
-            i = (i + 1) & owned->mask;
-        }
+        owned->overrides[i].store(nullptr, std::memory_order_release);
+        owned->hashes[i] = 0;
     }
 
     void D3D11TextureManager::reset_owned()
@@ -155,27 +152,19 @@ namespace TextureToolkit
         grow_locked(64, false);
     }
 
-    uint32_t D3D11TextureManager::note_referenced(void *resource, void **override_out)
+    uint32_t D3D11TextureManager::note_referenced(void *resource, void *&override_out)
     {
         const D3D11State::OwnedSet *owned = m_d3d11.snapshot.load(std::memory_order_acquire);
         if (owned == nullptr || resource == nullptr)
             return 0;
 
-        size_t i = (reinterpret_cast<uintptr_t>(resource) >> 4) & owned->mask;
-        while (true)
-        {
-            void *slot = owned->slots[i].load(std::memory_order_acquire);
-            if (slot == nullptr)
-                return 0;
-            if (slot == resource)
-            {
-                owned->last_used[i].store(frame_ticks(), std::memory_order_relaxed);
-                if (override_out != nullptr)
-                    *override_out = owned->overrides[i].load(std::memory_order_acquire);
-                return owned->hashes[i];
-            }
-            i = (i + 1) & owned->mask;
-        }
+        const size_t i = probe_slot(*owned, resource);
+        if (owned->slots[i].load(std::memory_order_relaxed) != resource)
+            return 0;
+
+        owned->last_used[i].store(frame_ticks(), std::memory_order_relaxed);
+        override_out = owned->overrides[i].load(std::memory_order_acquire);
+        return owned->hashes[i];
     }
 
     void D3D11TextureManager::register_owned_view(void *view, uint32_t hash)
@@ -207,19 +196,8 @@ namespace TextureToolkit
     void D3D11TextureManager::drop_override(uint32_t hash)
     {
         std::lock_guard<std::mutex> lock(m_d3d11.mutex);
-        if (m_d3d11.override_views.erase(hash) == 0)
-            return;
-
-        const D3D11State::OwnedSet *current = m_d3d11.snapshot.load(std::memory_order_acquire);
-        if (current == nullptr)
-            return;
-
-        D3D11State::OwnedSet *owned = const_cast<D3D11State::OwnedSet *>(current);
-        for (size_t i = 0; i <= owned->mask; ++i)
-        {
-            if (owned->slots[i].load(std::memory_order_relaxed) != nullptr && owned->hashes[i] == hash)
-                owned->overrides[i].store(nullptr, std::memory_order_release);
-        }
+        if (m_d3d11.override_views.erase(hash) != 0)
+            apply_override_locked(hash, nullptr);
     }
 
     void D3D11TextureManager::apply_override_locked(uint32_t hash, ID3D11ShaderResourceView *view)
@@ -776,11 +754,11 @@ namespace TextureToolkit
     void D3D11TextureManager::release_branch_replacements()
     {
         m_d3d11.injected.clear();
+        m_d3d11.views.clear();
+        reset_owned();
 
         // After reset_owned: the table is what the render thread reads, and dropping these views
         // while a slot still points at one would leave it reading a freed interface.
-        m_d3d11.views.clear();
-        reset_owned();
         m_d3d11.override_views.clear();
     }
 

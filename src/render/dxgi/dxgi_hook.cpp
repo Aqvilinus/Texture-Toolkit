@@ -237,8 +237,6 @@ namespace TextureToolkit
             return running();
         };
 
-        bool reported = false;
-
         for (int i = 0; i < 600; ++i) // ~60s budget for the game to start rendering
         {
             if (!running())
@@ -246,11 +244,8 @@ namespace TextureToolkit
 
             // Said once, whether or not the fallback below ever runs: this thread is the only
             // place that knows the game has had time to show its hand.
-            if (i == 200 && !reported)
-            {
-                reported = true;
+            if (i == 200)
                 report_startup_verdict();
-            }
 
             if (present_installed())
                 return; // a real swapchain got hooked the normal way; no dummy needed

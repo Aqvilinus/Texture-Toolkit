@@ -22,7 +22,7 @@ namespace TextureToolkit
                                 const D3D11_SUBRESOURCE_DATA *initial_data = nullptr, UINT mip_levels = 1);
         // 0 when the pointer is not one of ours. Fills override_out with the view to substitute
         // for this one, when there is one: the caller has already paid for the slot lookup.
-        uint32_t note_referenced(void *resource, void **override_out = nullptr);
+        uint32_t note_referenced(void *resource, void *&override_out);
         void pin_preview_view(ID3D11ShaderResourceView *view);
         void note_dump_candidate(ID3D11ShaderResourceView *view, uint32_t hash);
         void register_owned_view(void *view, uint32_t hash);
@@ -51,7 +51,10 @@ namespace TextureToolkit
         uint64_t branch_preview_handle() const override;
         uint64_t upload_file_preview(const DirectX::Image &image) override;
         void release_branch_replacements() override;
-        bool branch_has_replacement(uint32_t hash) const override { return m_d3d11.injected.contains(hash); }
+        bool branch_has_replacement(uint32_t hash) const override
+        {
+            return m_d3d11.injected.contains(hash) || m_d3d11.override_views.contains(hash);
+        }
 
         // One replacement per frame, built off the draw call that asked for it.
         void process_branch_injections() override;
@@ -101,6 +104,12 @@ namespace TextureToolkit
             // that. Order is always m_mutex then this one; nothing takes them the other way round.
             std::mutex mutex;
         };
+
+        // Where a key lives, or the empty slot that would hold it. Open addressing, so a miss stops
+        // at the first empty slot. Written once: the hash function, the probe order and the acquire
+        // on the slot load have to agree everywhere they are used.
+        static size_t probe_slot(const D3D11State::OwnedSet &owned, void *key);
+
         D3D11State m_d3d11;
     };
 }
