@@ -54,8 +54,6 @@ namespace TextureToolkit
         // A TYPELESS .dds is neither viewable nor re-injectable.
         format = resolve_typeless(format);
 
-        // ScratchImage lays out every level at the pitch the format demands, which is not the pitch
-        // the game uploaded at, so each level is copied row by row into it. Special K does the same.
         DirectX::TexMetadata meta = {};
         meta.width = width;
         meta.height = height;
@@ -65,32 +63,30 @@ namespace TextureToolkit
         meta.format = format;
         meta.dimension = DirectX::TEX_DIMENSION_TEXTURE2D;
 
-        DirectX::ScratchImage image;
-        if (FAILED(image.Initialize(meta)))
-            return {};
-
+        // Described where it already sits rather than copied into a ScratchImage first. The writer
+        // takes each row's worth of pixels and steps the source by its own pitch, so the padding
+        // the game uploaded with is dropped on the way out -- which is what the copy used to do,
+        // for the price of a second full-size buffer and a second pass over every level.
+        std::vector<DirectX::Image> images(levels.size());
         for (size_t level = 0; level < levels.size(); ++level)
         {
-            const DirectX::Image *dst = image.GetImage(level, 0, 0);
-            if (dst == nullptr || dst->pixels == nullptr || levels[level].data.empty())
+            if (levels[level].data.empty() || levels[level].row_pitch == 0)
                 return {};
 
-            const size_t rows = DirectX::ComputeScanlines(format, dst->height);
-            const size_t copy = (std::min)(static_cast<size_t>(levels[level].row_pitch), dst->rowPitch);
-            const uint8_t *src = levels[level].data.data();
-            uint8_t *out = dst->pixels;
-
-            for (size_t row = 0; row < rows; ++row)
-            {
-                memcpy(out, src, copy);
-                src += levels[level].row_pitch;
-                out += dst->rowPitch;
-            }
+            DirectX::Image &img = images[level];
+            img.width = (std::max)(size_t{1}, static_cast<size_t>(width) >> level);
+            img.height = (std::max)(size_t{1}, static_cast<size_t>(height) >> level);
+            img.format = format;
+            img.rowPitch = levels[level].row_pitch;
+            img.slicePitch = levels[level].data.size();
+            img.pixels = const_cast<uint8_t *>(levels[level].data.data());
         }
 
         const std::filesystem::path dds_path = dump_path_for(hash);
 
-        const HRESULT hr = DirectX::SaveToDDSFile(image.GetImages(), image.GetImageCount(), image.GetMetadata(),
+        // A source row shorter than the format demands is refused rather than written out padded
+        // with whatever was in the buffer, which is what the old copy did silently.
+        const HRESULT hr = DirectX::SaveToDDSFile(images.data(), images.size(), meta,
                                                   DirectX::DDS_FLAGS_NONE, dds_path.wstring().c_str());
         if (FAILED(hr))
         {
