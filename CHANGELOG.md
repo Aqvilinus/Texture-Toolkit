@@ -34,6 +34,11 @@ length instead of a refused lock -- in one place a write past the end of a mappe
 
 Sources for the D3D11 and DXGI hooks are grouped the way the input and D3D9 ones already were.
 
+The diagnostics build is worth mentioning because it is what these things get found with, and it
+was broken twice over: it had not compiled since the texture manager was split per API, and its
+per-frame report printed past the end of its own argument list. Neither shows up in a shipping
+build, which never compiles that file.
+
 ## Replacement moved to texture creation
 
 Upstream substitutes textures at draw time. That is the hottest hook there is: a busy frame binds
