@@ -2,7 +2,7 @@
 
 // The one place a version number is written in the sources. The log line, the on-screen banner
 // and the release tag drifted apart when each was edited on its own.
-#define TT_VERSION "1.1.1"
+#define TT_VERSION "1.2.0"
 
 // Which build a log came from. A 32-bit game needs the x86 one, and the usual first question about
 // a report that says nothing happened is which of the two was in the folder.

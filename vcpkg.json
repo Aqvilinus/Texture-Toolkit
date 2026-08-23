@@ -1,6 +1,6 @@
 {
   "name": "texture-toolkit",
-  "version-string": "1.1.1",
+  "version-string": "1.2.0",
   "description": "Runtime texture dumping and replacement for Direct3D 9 and Direct3D 11 games",
   "dependencies": [
     "directxtex",

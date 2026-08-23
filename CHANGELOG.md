@@ -58,6 +58,10 @@ A menu that redraws the same art every frame went from single-digit fps to the f
 
 ## Input
 
+- Input is taken from the game at dispatch rather than out of the message queue. A key press only
+  becomes a character when the game's own pump translates it, so a message blanked in the queue is
+  a character never born -- which is why the panel's filter box could not be typed into. Reading it
+  where the window would also settles its encoding.
 - The exemption that lets our own code read real key state is thread-local and scoped. Upstream
   held one global flag across the whole ImGui build, so any other game thread polling key state
   during that window read through the mask and kept acting on it.
@@ -92,6 +96,15 @@ A menu that redraws the same art every frame went from single-digit fps to the f
 - **An install path over `MAX_PATH` killed the game at startup.**
 - **Unload ran in the wrong order**, tearing down the texture managers while their detours were
   still live.
+- **An sRGB replacement could never be built.** The view was made sRGB over a linear resource, which
+  D3D11 allows only for a typeless one, so every such file failed and was refused for the session.
+- **An unknown D3D9 format was measured as four bytes a pixel**, so a one- or two-byte format read
+  past the end of the locked rectangle. Formats we cannot measure are left untracked.
+- **A D3D9 surface locked past level 0 stamped that mip's hash on the parent texture**, so nothing
+  found a replacement for it.
+- **Injection reads DDS files permissively**, since old exporters write short headers and wrong mip
+  counts and the library can read them anyway. Generated mips use a box filter and never WIC, so
+  one replacement file makes the same mips on any machine.
 
 ## Options
 
@@ -107,6 +120,8 @@ A menu that redraws the same art every frame went from single-digit fps to the f
 - DirectXTex replaces the hand-written DDS handling: parsing, channel masks, mip generation, DDS
   writing, and the readback that dumps every mip and array slice. Mip synthesis is still
   uncompressed-only -- a block-compressed replacement has to ship its own chain.
+- A texture on its way to disk is one `ScratchImage` rather than a vector per level, so it is
+  allocated once and copied once.
 - The sibling ReShade checkout is no longer needed. CMake fetches Dear ImGui, MinHook and
   DirectXTex at configure time, pinned to overridable tags, so a bare clone builds, and the `.asi`
   links the static CRT so it needs no Visual C++ redistributable.
