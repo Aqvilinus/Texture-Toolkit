@@ -557,6 +557,11 @@ namespace TextureToolkit
             if (msg == WM_INPUT)
                 return 0;
 
+            // WM_MENUCHAR sits outside the key range, and letting it through while the panel has
+            // the keyboard is what makes Windows beep at a key pressed with Alt held.
+            if (msg == WM_MENUCHAR)
+                return MNC_CLOSE << 16;
+
             if ((msg >= WM_KEYFIRST && msg <= WM_KEYLAST) ||
                 (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST))
             {

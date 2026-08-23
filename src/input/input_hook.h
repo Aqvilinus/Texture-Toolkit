@@ -75,26 +75,44 @@ namespace TextureToolkit
         std::unordered_set<IDirectInput8 *> m_hooked_interfaces;
         std::unordered_set<IDirectInputDevice8 *> m_hooked_devices;
 
-        // --- The window message queue: four entry points, one filter ---
+        // --- The window message queue ---
+        //
+        // Messages are taken away from the game at dispatch, not in the queue, which is where
+        // Special K takes them. It has to be that way round: a key press only becomes a character
+        // when the game's own pump runs TranslateMessage on it, so a message blanked in the queue
+        // is a character never born, and a text field in the panel can never receive one. Left
+        // alone until dispatch, the character appears by itself -- and in the window's encoding,
+        // which is the one the ImGui backend assumes.
+        //
+        // Only raw input is still taken in the queue: nothing translates it, so there is nothing
+        // to wait for.
 
         static BOOL WINAPI Hooked_PeekMessageA(LPMSG lpMsg, HWND hWnd, UINT wMsgFilterMin, UINT wMsgFilterMax, UINT wRemoveMsg);
         static BOOL WINAPI Hooked_PeekMessageW(LPMSG lpMsg, HWND hWnd, UINT wMsgFilterMin, UINT wMsgFilterMax, UINT wRemoveMsg);
         static BOOL WINAPI Hooked_GetMessageA(LPMSG lpMsg, HWND hWnd, UINT wMsgFilterMin, UINT wMsgFilterMax);
         static BOOL WINAPI Hooked_GetMessageW(LPMSG lpMsg, HWND hWnd, UINT wMsgFilterMin, UINT wMsgFilterMax);
+        static LRESULT WINAPI Hooked_DispatchMessageA(const MSG *lpMsg);
+        static LRESULT WINAPI Hooked_DispatchMessageW(const MSG *lpMsg);
 
-        // Hands the message to ImGui and reports whether the game should be denied it.
-        static bool feed_to_overlay(LPMSG msg);
-        static BOOL swallow_if_ours(BOOL got_message, LPMSG msg);
+        static BOOL swallow_raw_input(BOOL got_message, LPMSG msg);
+
+        // Feeds the message to the overlay and says whether the game's window procedure should be
+        // skipped for it.
+        static bool overlay_takes(const MSG *msg);
 
         using PeekMessageA_fn = BOOL(WINAPI *)(LPMSG, HWND, UINT, UINT, UINT);
         using PeekMessageW_fn = BOOL(WINAPI *)(LPMSG, HWND, UINT, UINT, UINT);
         using GetMessageA_fn = BOOL(WINAPI *)(LPMSG, HWND, UINT, UINT);
         using GetMessageW_fn = BOOL(WINAPI *)(LPMSG, HWND, UINT, UINT);
+        using DispatchMessageA_fn = LRESULT(WINAPI *)(const MSG *);
+        using DispatchMessageW_fn = LRESULT(WINAPI *)(const MSG *);
 
         PeekMessageA_fn m_orig_peek_message_a = nullptr;
         PeekMessageW_fn m_orig_peek_message_w = nullptr;
         GetMessageA_fn m_orig_get_message_a = nullptr;
         GetMessageW_fn m_orig_get_message_w = nullptr;
+        DispatchMessageA_fn m_orig_dispatch_message_a = nullptr;
+        DispatchMessageW_fn m_orig_dispatch_message_w = nullptr;
 
         // --- Polled keyboard state: three ways to ask the same question ---
 

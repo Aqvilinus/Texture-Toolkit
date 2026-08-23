@@ -92,6 +92,18 @@ namespace TextureToolkit
                 HookManager::get().create_hook(pGetMessageW, &Hooked_GetMessageW, reinterpret_cast<void **>(&m_orig_get_message_w));
             }
 
+            void *pDispatchMessageA = reinterpret_cast<void *>(GetProcAddress(user32_module, "DispatchMessageA"));
+            if (pDispatchMessageA != nullptr)
+            {
+                HookManager::get().create_hook(pDispatchMessageA, &Hooked_DispatchMessageA, reinterpret_cast<void **>(&m_orig_dispatch_message_a));
+            }
+
+            void *pDispatchMessageW = reinterpret_cast<void *>(GetProcAddress(user32_module, "DispatchMessageW"));
+            if (pDispatchMessageW != nullptr)
+            {
+                HookManager::get().create_hook(pDispatchMessageW, &Hooked_DispatchMessageW, reinterpret_cast<void **>(&m_orig_dispatch_message_w));
+            }
+
             void *pGetAsyncKeyState = reinterpret_cast<void *>(GetProcAddress(user32_module, "GetAsyncKeyState"));
             if (pGetAsyncKeyState != nullptr)
             {
@@ -262,50 +274,67 @@ namespace TextureToolkit
 
     // --- The window message queue ---
 
-    bool InputHook::feed_to_overlay(LPMSG lpMsg)
+    bool InputHook::overlay_takes(const MSG *msg)
     {
-        if (lpMsg == nullptr) return false;
+        if (msg == nullptr || !TextureToolkitUI::is_visible())
+            return false;
 
-        if (lpMsg->message == WM_INPUT)
-            return true;
+        const bool keyboard_or_mouse =
+            (msg->message >= WM_KEYFIRST && msg->message <= WM_KEYLAST) ||
+            (msg->message >= WM_MOUSEFIRST && msg->message <= WM_MOUSELAST) ||
+            msg->message == WM_MENUCHAR;
 
-        if ((lpMsg->message >= WM_KEYFIRST && lpMsg->message <= WM_KEYLAST) ||
-            (lpMsg->message >= WM_MOUSEFIRST && lpMsg->message <= WM_MOUSELAST))
-        {
-            PassthroughScope pass;
-            ImGui_ImplWin32_WndProcHandler(lpMsg->hwnd, lpMsg->message, lpMsg->wParam, lpMsg->lParam);
-            return true; // Block input message from reaching the game
-        }
+        if (!keyboard_or_mouse)
+            return false;
 
-        return false;
+        PassthroughScope pass;
+        ImGui_ImplWin32_WndProcHandler(msg->hwnd, msg->message, msg->wParam, msg->lParam);
+        return true;
     }
 
-    // Four message-pump entry points differ only in which original they call.
-    BOOL InputHook::swallow_if_ours(BOOL got_message, LPMSG msg)
+    BOOL InputHook::swallow_raw_input(BOOL got_message, LPMSG msg)
     {
-        if (got_message && msg != nullptr && TextureToolkitUI::is_visible() && feed_to_overlay(msg))
+        if (got_message && msg != nullptr && msg->message == WM_INPUT && TextureToolkitUI::is_visible())
             msg->message = WM_NULL;
         return got_message;
     }
 
     BOOL WINAPI InputHook::Hooked_PeekMessageA(LPMSG lpMsg, HWND hWnd, UINT wMsgFilterMin, UINT wMsgFilterMax, UINT wRemoveMsg)
     {
-        return InputHook::swallow_if_ours(get().m_orig_peek_message_a(lpMsg, hWnd, wMsgFilterMin, wMsgFilterMax, wRemoveMsg), lpMsg);
+        return InputHook::swallow_raw_input(get().m_orig_peek_message_a(lpMsg, hWnd, wMsgFilterMin, wMsgFilterMax, wRemoveMsg), lpMsg);
     }
 
     BOOL WINAPI InputHook::Hooked_PeekMessageW(LPMSG lpMsg, HWND hWnd, UINT wMsgFilterMin, UINT wMsgFilterMax, UINT wRemoveMsg)
     {
-        return InputHook::swallow_if_ours(get().m_orig_peek_message_w(lpMsg, hWnd, wMsgFilterMin, wMsgFilterMax, wRemoveMsg), lpMsg);
+        return InputHook::swallow_raw_input(get().m_orig_peek_message_w(lpMsg, hWnd, wMsgFilterMin, wMsgFilterMax, wRemoveMsg), lpMsg);
     }
 
     BOOL WINAPI InputHook::Hooked_GetMessageA(LPMSG lpMsg, HWND hWnd, UINT wMsgFilterMin, UINT wMsgFilterMax)
     {
-        return InputHook::swallow_if_ours(get().m_orig_get_message_a(lpMsg, hWnd, wMsgFilterMin, wMsgFilterMax), lpMsg);
+        return InputHook::swallow_raw_input(get().m_orig_get_message_a(lpMsg, hWnd, wMsgFilterMin, wMsgFilterMax), lpMsg);
     }
 
     BOOL WINAPI InputHook::Hooked_GetMessageW(LPMSG lpMsg, HWND hWnd, UINT wMsgFilterMin, UINT wMsgFilterMax)
     {
-        return InputHook::swallow_if_ours(get().m_orig_get_message_w(lpMsg, hWnd, wMsgFilterMin, wMsgFilterMax), lpMsg);
+        return InputHook::swallow_raw_input(get().m_orig_get_message_w(lpMsg, hWnd, wMsgFilterMin, wMsgFilterMax), lpMsg);
+    }
+
+    // The game's own window procedure is skipped, not the message: default processing still runs,
+    // so the window keeps behaving like a window. This is where Special K takes input away too.
+    LRESULT WINAPI InputHook::Hooked_DispatchMessageA(const MSG *lpMsg)
+    {
+        if (overlay_takes(lpMsg))
+            return DefWindowProcA(lpMsg->hwnd, lpMsg->message, lpMsg->wParam, lpMsg->lParam);
+
+        return get().m_orig_dispatch_message_a(lpMsg);
+    }
+
+    LRESULT WINAPI InputHook::Hooked_DispatchMessageW(const MSG *lpMsg)
+    {
+        if (overlay_takes(lpMsg))
+            return DefWindowProcW(lpMsg->hwnd, lpMsg->message, lpMsg->wParam, lpMsg->lParam);
+
+        return get().m_orig_dispatch_message_w(lpMsg);
     }
 
     // --- Polled keyboard state ---
