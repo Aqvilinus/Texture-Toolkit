@@ -74,7 +74,7 @@ set(SOURCES
     src/core/iat_hook.cpp
     src/core/logger.cpp
     src/input/input_hook.cpp
-    src/main.cpp
+    src/Main.cpp
     src/render/d3d11/d3d11_hook.cpp
     src/render/d3d11/d3d11_texmgr.cpp
     src/render/d3d9/d3d9_format.cpp
