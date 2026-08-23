@@ -259,31 +259,28 @@ namespace TextureToolkit
 
     HRESULT STDMETHODCALLTYPE D3D9Hook::Hooked_Present(IDirect3DDevice9 *device, const RECT *pSourceRect, const RECT *pDestRect, HWND hDestWindowOverride, const RGNDATA *pDirtyRegion)
     {
-        if (s_presenting)
-            return get().m_orig_present(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
-
         ScopedFlag presenting(s_presenting);
-        get().present_frame(device, PresentSource::Device);
+        if (!presenting.was_set())
+            get().present_frame(device, PresentSource::Device);
+
         return get().m_orig_present(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
     }
 
     HRESULT STDMETHODCALLTYPE D3D9Hook::Hooked_PresentEx(IDirect3DDevice9Ex *device, const RECT *pSourceRect, const RECT *pDestRect, HWND hDestWindowOverride, const RGNDATA *pDirtyRegion, DWORD dwFlags)
     {
-        if (s_presenting)
-            return get().m_orig_present_ex(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
-
         ScopedFlag presenting(s_presenting);
-        get().present_frame(device, PresentSource::DeviceEx);
+        if (!presenting.was_set())
+            get().present_frame(device, PresentSource::DeviceEx);
+
         return get().m_orig_present_ex(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
     }
 
     HRESULT STDMETHODCALLTYPE D3D9Hook::Hooked_SwapChainPresent(IDirect3DSwapChain9 *swapchain, const RECT *pSourceRect, const RECT *pDestRect, HWND hDestWindowOverride, const RGNDATA *pDirtyRegion, DWORD dwFlags)
     {
-        if (s_presenting)
-            return get().m_orig_swapchain_present(swapchain, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
-
         ScopedFlag presenting(s_presenting);
-        get().present_frame(get().m_device, PresentSource::SwapChain);
+        if (!presenting.was_set())
+            get().present_frame(get().m_device, PresentSource::SwapChain);
+
         return get().m_orig_swapchain_present(swapchain, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
     }
 

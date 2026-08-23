@@ -169,17 +169,21 @@ namespace TextureToolkit
     // GetModuleHandle only, exactly as Special K does and like them only the last version --
     // so a game that ships without it is
     // unaffected, and a game that uses it lends us the copy it already has.
+    // Never loaded by us, only borrowed from a game that already has it, and only the last version
+    // -- exactly as Special K does. A game without D3DX gets a null and the paths below fall back.
+    template <typename Fn>
+    static Fn d3dx9_proc(const char *name)
+    {
+        HMODULE module = GetModuleHandleW(L"d3dx9_43.dll");
+        return module ? reinterpret_cast<Fn>(GetProcAddress(module, name)) : nullptr;
+    }
+
     static IDirect3DTexture9 *create_via_d3dx(IDirect3DDevice9 *device, const std::filesystem::path &path)
     {
         using CreateFromMemory_fn = HRESULT(WINAPI *)(IDirect3DDevice9 *, LPCVOID, UINT, UINT, UINT, UINT,
                                                       DWORD, D3DFORMAT, D3DPOOL, DWORD, DWORD, D3DCOLOR,
                                                       void *, void *, IDirect3DTexture9 **);
-        static CreateFromMemory_fn create = []() -> CreateFromMemory_fn {
-            HMODULE module = GetModuleHandleW(L"d3dx9_43.dll");
-            return module ? reinterpret_cast<CreateFromMemory_fn>(
-                                GetProcAddress(module, "D3DXCreateTextureFromFileInMemoryEx"))
-                          : nullptr;
-        }();
+        static CreateFromMemory_fn create = d3dx9_proc<CreateFromMemory_fn>("D3DXCreateTextureFromFileInMemoryEx");
 
         if (create == nullptr || device == nullptr)
             return nullptr;
@@ -211,12 +215,7 @@ namespace TextureToolkit
     static bool save_via_d3dx(IDirect3DBaseTexture9 *texture, const std::filesystem::path &path)
     {
         using SaveTextureToFileW_fn = HRESULT(WINAPI *)(LPCWSTR, DWORD, IDirect3DBaseTexture9 *, const PALETTEENTRY *);
-        static SaveTextureToFileW_fn save = []() -> SaveTextureToFileW_fn {
-            HMODULE module = GetModuleHandleW(L"d3dx9_43.dll");
-            return module ? reinterpret_cast<SaveTextureToFileW_fn>(
-                                GetProcAddress(module, "D3DXSaveTextureToFileW"))
-                          : nullptr;
-        }();
+        static SaveTextureToFileW_fn save = d3dx9_proc<SaveTextureToFileW_fn>("D3DXSaveTextureToFileW");
 
         if (save == nullptr || texture == nullptr)
             return false;
@@ -237,13 +236,15 @@ namespace TextureToolkit
 
         ScopedFlag injecting(D3D9Hook::s_inside_injection);
 
+        const DWORD levels = texture->GetLevelCount();
+
         IDirect3DTexture9 *copy = nullptr;
-        if (FAILED(device->CreateTexture(desc.Width, desc.Height, texture->GetLevelCount(),
+        if (FAILED(device->CreateTexture(desc.Width, desc.Height, levels,
                                          D3DUSAGE_DYNAMIC, desc.Format, D3DPOOL_DEFAULT, &copy, nullptr)) ||
             copy == nullptr)
             return nullptr;
 
-        for (DWORD level = 0; level < texture->GetLevelCount(); ++level)
+        for (DWORD level = 0; level < levels; ++level)
         {
             IDirect3DSurface9 *from = nullptr;
             IDirect3DSurface9 *to = nullptr;

@@ -21,6 +21,10 @@ namespace TextureToolkit
 
         ~ScopedFlag() noexcept { m_flag = m_previous; }
 
+        // Whether someone up the stack already held it. Lets a re-entrant hook ask and act in one
+        // step instead of testing the flag and setting it as two.
+        bool was_set() const noexcept { return m_previous; }
+
         ScopedFlag(const ScopedFlag &) = delete;
         ScopedFlag(ScopedFlag &&) = delete;
         ScopedFlag &operator=(const ScopedFlag &) = delete;

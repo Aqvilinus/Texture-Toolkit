@@ -315,9 +315,7 @@ namespace TextureToolkit
         rank = 0;
 
         auto strip_prefix = [&name, &rank](std::string_view prefix, int cost) {
-            if (name.size() > prefix.size() &&
-                std::ranges::equal(name.substr(0, prefix.size()), prefix, {}, [](char c) { return std::tolower(static_cast<unsigned char>(c)); },
-                                   [](char c) { return std::tolower(static_cast<unsigned char>(c)); }))
+            if (name.size() > prefix.size() && _strnicmp(name.data(), prefix.data(), prefix.size()) == 0)
             {
                 name.remove_prefix(prefix.size());
                 rank += cost;
