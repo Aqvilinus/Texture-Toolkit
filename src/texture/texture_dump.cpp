@@ -88,9 +88,7 @@ namespace TextureToolkit
             }
         }
 
-        std::error_code ec;
-        std::filesystem::create_directories(get_dump_dir(), ec);
-        const std::filesystem::path dds_path = get_dump_dir() / (format_hash_hex(hash) + ".dds");
+        const std::filesystem::path dds_path = dump_path_for(hash);
 
         const HRESULT hr = DirectX::SaveToDDSFile(image.GetImages(), image.GetImageCount(), image.GetMetadata(),
                                                   DirectX::DDS_FLAGS_NONE, dds_path.wstring().c_str());
@@ -139,14 +137,7 @@ namespace TextureToolkit
             std::string path = write_dump_dds(req.hash, req.width, req.height, req.format, req.levels);
             if (!path.empty())
             {
-                std::lock_guard<std::mutex> lock(m_mutex);
-                auto it = m_tracked_textures.find(req.hash);
-                if (it != m_tracked_textures.end())
-                {
-                    it->second.filepath_dumped = path;
-                    if (it->second.status != TextureStatus::INJECTED)
-                        it->second.status = TextureStatus::DUMPED;
-                }
+                note_dumped(req.hash, path);
             }
             else
             {
@@ -185,14 +176,7 @@ namespace TextureToolkit
             if (path.empty())
                 continue;
 
-            std::lock_guard<std::mutex> lock(m_mutex);
-            auto it = m_tracked_textures.find(rb.hash);
-            if (it != m_tracked_textures.end())
-            {
-                it->second.filepath_dumped = path;
-                if (it->second.status != TextureStatus::INJECTED)
-                    it->second.status = TextureStatus::DUMPED;
-            }
+            note_dumped(rb.hash, path);
         }
     }
 

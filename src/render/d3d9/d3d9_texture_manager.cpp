@@ -57,17 +57,17 @@ namespace TextureToolkit
         }
     }
 
-    void D3D9TextureManager::register_texture9(IDirect3DDevice9 *device, IDirect3DTexture9 *texture, const void *pixel_data, UINT width, UINT height, D3DFORMAT format, UINT pitch, bool defer_dump)
+    uint32_t D3D9TextureManager::register_texture9(IDirect3DDevice9 *device, IDirect3DTexture9 *texture, const void *pixel_data, UINT width, UINT height, D3DFORMAT format, UINT pitch, bool auto_dump_here)
     {
         if (device == nullptr || texture == nullptr || pixel_data == nullptr || width == 0 || height == 0)
-            return;
+            return 0;
 
         if (filter_small_textures && (width < 16 || height < 16))
-            return;
+            return 0;
 
         uint32_t hash = hash_pixels(pixel_data, width, height, format, pitch);
         if (hash == 0)
-            return;
+            return 0;
 
         UINT original_levels = texture->GetLevelCount();
 
@@ -113,7 +113,7 @@ namespace TextureToolkit
         track(hash, details);
         Logger::get().debug("[D3D9Textures] Tracked D3D9 texture: 0x" + details.hash_hex + " (" + std::to_string(width) + "x" + std::to_string(height) + ")");
 
-        if (auto_dump && !defer_dump)
+        if (auto_dump && auto_dump_here)
         {
             DXGI_FORMAT dxgi_fmt = to_dxgi(format);
             if (dxgi_fmt != DXGI_FORMAT_UNKNOWN)
@@ -121,6 +121,8 @@ namespace TextureToolkit
                 dump_texture(hash, width, height, dxgi_fmt, {copy_level(dxgi_fmt, height, pixel_data, pitch)});
             }
         }
+
+        return hash;
     }
 
     static bool save_via_d3dx(IDirect3DBaseTexture9 *texture, const std::filesystem::path &path);
@@ -145,38 +147,20 @@ namespace TextureToolkit
 
             if (rect.pBits != nullptr && rect.Pitch > 0)
             {
-                // The dump is deferred: D3DX can write the whole chain from the texture itself,
-                // which is the point of watching this entry at all.
-                register_texture9(device, texture, rect.pBits, desc.Width, desc.Height, desc.Format,
-                                  static_cast<UINT>(rect.Pitch), /*defer_dump=*/true);
+                // Registered without its usual auto-dump: D3DX can write the whole mip chain from
+                // the texture itself, which is the point of watching this entry at all.
+                hash = register_texture9(device, texture, rect.pBits, desc.Width, desc.Height, desc.Format,
+                                         static_cast<UINT>(rect.Pitch), /*auto_dump_here=*/false);
             }
             texture->UnlockRect(0);
         }
 
-        {
-            std::lock_guard<std::mutex> lock(m_mutex);
-            DWORD size = sizeof(hash);
-            if (FAILED(texture->GetPrivateData(TT_HASH_GUID, &hash, &size)) || size != sizeof(hash) || hash == 0)
-                return;
-
-            if (!auto_dump || m_tracked_textures.find(hash) == m_tracked_textures.end())
-                return;
-        }
-
-        std::error_code ec;
-        std::filesystem::create_directories(get_dump_dir(), ec);
-        const std::filesystem::path dds_path = get_dump_dir() / (format_hash_hex(hash) + ".dds");
-        if (!save_via_d3dx(texture, dds_path))
+        if (hash == 0 || !auto_dump)
             return;
 
-        std::lock_guard<std::mutex> lock(m_mutex);
-        auto it = m_tracked_textures.find(hash);
-        if (it != m_tracked_textures.end())
-        {
-            it->second.filepath_dumped = dds_path.string();
-            if (it->second.status != TextureStatus::INJECTED)
-                it->second.status = TextureStatus::DUMPED;
-        }
+        const std::filesystem::path dds_path = dump_path_for(hash);
+        if (save_via_d3dx(texture, dds_path))
+            note_dumped(hash, dds_path.string());
     }
 
     // original_levels is the original texture's level count. Caller MUST hold m_mutex.
@@ -439,7 +423,7 @@ namespace TextureToolkit
             // Hot reload: a DDS added after this texture was uploaded has no replacement yet, and
             // the game will not upload it again. Only flag it here; the build happens in on_frame,
             // never inside this draw call (see process_pending_injections).
-            note_pending_injection(hash, false);
+            note_pending_injection(hash);
         }
         if (it != m_d3d9.replacements.end() && it->second != nullptr)
             return it->second.Get();
@@ -474,9 +458,7 @@ namespace TextureToolkit
             // D3DX first, the way Special K does it: it writes the whole texture, so every level
             // and every format survive. Our own writer below is what a game without D3DX gets.
             {
-                std::error_code ec;
-                std::filesystem::create_directories(get_dump_dir(), ec);
-                const std::filesystem::path dds_path = get_dump_dir() / (format_hash_hex(hash) + ".dds");
+                const std::filesystem::path dds_path = dump_path_for(hash);
 
                 if ((sd.Usage & D3DUSAGE_RENDERTARGET) != 0)
                 {
@@ -572,19 +554,6 @@ namespace TextureToolkit
 
     // Flags a drawn texture that has an inject file but no live replacement yet. Cheap: this runs
     // inside the game's draw call, so it only records the hash. Caller MUST hold m_mutex.
-    void D3D9TextureManager::note_pending_injection(uint32_t hash, bool is_dx11)
-    {
-
-        if (!enable_injection)
-            return;
-        if (m_failed_injections.find(hash) != m_failed_injections.end())
-            return;
-        if (m_injected_files.find(hash) == m_injected_files.end())
-            return;
-
-        m_pending_injections[hash] = is_dx11;
-    }
-
     // Caller MUST hold m_mutex.
     void D3D9TextureManager::process_pending_injections()
     {
@@ -596,10 +565,8 @@ namespace TextureToolkit
         int budget = 1;
         while (!m_pending_injections.empty() && budget-- > 0)
         {
-            auto pit = m_pending_injections.begin();
-            const uint32_t hash = pit->first;
-            const bool is_dx11 = pit->second;
-            m_pending_injections.erase(pit);
+            const uint32_t hash = *m_pending_injections.begin();
+            m_pending_injections.erase(m_pending_injections.begin());
 
             auto fit = m_injected_files.find(hash);
             auto tit = m_tracked_textures.find(hash);
@@ -611,9 +578,8 @@ namespace TextureToolkit
 
             // No device yet is a "not now", not a "never": leave the flag off and let the next
             // draw re-raise it, instead of blacklisting a file that was never actually tried.
-            ID3D11Device *dev11 = is_dx11 ? RenderBackend::get().d3d11_device() : nullptr;
-            IDirect3DDevice9 *dev9 = is_dx11 ? nullptr : RenderBackend::get().d3d9_device();
-            if (is_dx11 ? (dev11 == nullptr) : (dev9 == nullptr))
+            IDirect3DDevice9 *dev9 = RenderBackend::get().d3d9_device();
+            if (dev9 == nullptr)
                 continue;
 
             TextureDetails &details = tit->second;

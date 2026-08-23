@@ -12,7 +12,9 @@ namespace TextureToolkit
         static D3D9TextureManager &get();
 
         IDirect3DBaseTexture9 *get_replacement_texture9(IDirect3DBaseTexture9 *orig);
-        void register_texture9(IDirect3DDevice9 *device, IDirect3DTexture9 *texture, const void *pixel_data, UINT width, UINT height, D3DFORMAT format, UINT pitch, bool defer_dump = false);
+        // The hash it settled on, or 0 when the texture was not tracked. The caller that needs it
+        // would otherwise read it back out of the texture's private data.
+        uint32_t register_texture9(IDirect3DDevice9 *device, IDirect3DTexture9 *texture, const void *pixel_data, UINT width, UINT height, D3DFORMAT format, UINT pitch, bool auto_dump_here = true);
 
         // A texture D3DX built from a file, which arrives complete: every mip level at once, unlike
         // the lock path where the game delivers one level at a time and never says when it is done.
@@ -35,7 +37,6 @@ namespace TextureToolkit
         void release_branch_file_preview() override;
 
     private:
-        void note_pending_injection(uint32_t hash, bool is_dx11);
         void process_pending_injections();
 
         struct D3D9State

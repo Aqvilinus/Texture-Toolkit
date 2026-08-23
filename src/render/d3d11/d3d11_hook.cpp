@@ -510,7 +510,7 @@ namespace TextureToolkit
 
                     if (device != nullptr)
                     {
-                        tm.register_texture11(
+                        const uint32_t now = tm.register_texture11(
                             device,
                             pResource,
                             data.mapped.pData,
@@ -524,7 +524,7 @@ namespace TextureToolkit
                         // Registration has decided what the texture is now. If that is something
                         // else, the replacement standing in for the old content no longer describes
                         // anything, and registration has already queued one for the new content.
-                        if (previous != 0 && previous != tm.resource_hash(pResource))
+                        if (previous != 0 && previous != now)
                             tm.drop_override(previous);
                     }
                 }

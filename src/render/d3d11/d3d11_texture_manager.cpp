@@ -389,23 +389,23 @@ namespace TextureToolkit
         return texture;
     }
 
-    void D3D11TextureManager::register_texture11(ID3D11Device *device, ID3D11Resource *resource, const void *pixel_data,
-                                                 UINT width, UINT height, DXGI_FORMAT format, UINT pitch,
-                                                 const D3D11_SUBRESOURCE_DATA *initial_data, UINT mip_levels)
+    uint32_t D3D11TextureManager::register_texture11(ID3D11Device *device, ID3D11Resource *resource, const void *pixel_data,
+                                                     UINT width, UINT height, DXGI_FORMAT format, UINT pitch,
+                                                     const D3D11_SUBRESOURCE_DATA *initial_data, UINT mip_levels)
     {
         if (device == nullptr || resource == nullptr || pixel_data == nullptr || width == 0 || height == 0)
-            return;
+            return 0;
 
         if (filter_small_textures && (width < 16 || height < 16))
-            return;
+            return 0;
 
         size_t row_bytes = 0, rows = 0;
         if (!tight_rows(format, width, height, row_bytes, rows))
-            return;
+            return 0;
 
         const uint32_t hash = hash_and_account(*this, pixel_data, pitch, row_bytes, rows);
         if (hash == 0)
-            return;
+            return 0;
 
         D3D11_TEXTURE2D_DESC orig_desc = {};
         {
@@ -447,14 +447,7 @@ namespace TextureToolkit
         // A file exists but this texture did not get a replacement when it was created -- it was
         // created empty and filled later, or it is not a shader resource, or its usage ruled it
         // out. Queue a replacement view instead; nothing here waits for Reload.
-        if (enable_injection &&
-            m_injected_files.contains(hash) &&
-            !m_d3d11.injected.contains(hash) &&
-            !m_d3d11.override_views.contains(hash) &&
-            !m_failed_injections.contains(hash))
-        {
-            m_pending_injections.insert_or_assign(hash, /*is_dx11=*/true);
-        }
+        note_pending_injection(hash);
 
         if (auto_dump)
         {
@@ -474,6 +467,8 @@ namespace TextureToolkit
             // The status follows the file: the writer thread sets it once the DDS is on disk.
             dump_texture(hash, width, height, format, std::move(levels));
         }
+
+        return hash;
     }
 
     // A file that turned up for a hash the game has already created its texture for. Copying into
@@ -492,14 +487,10 @@ namespace TextureToolkit
 
         uint32_t hash = 0;
         {
-            for (auto it = m_pending_injections.begin(); it != m_pending_injections.end(); ++it)
+            if (!m_pending_injections.empty())
             {
-                if (it->second)   // is_dx11
-                {
-                    hash = it->first;
-                    m_pending_injections.erase(it);
-                    break;
-                }
+                hash = *m_pending_injections.begin();
+                m_pending_injections.erase(m_pending_injections.begin());
             }
         }
 
@@ -586,15 +577,7 @@ namespace TextureToolkit
             // A file for a hash the game created before this file existed: nothing to copy into,
             // so it is queued for a replacement view instead, one per frame.
             for (const auto &[hash, details] : m_tracked_textures)
-            {
-                if (m_injected_files.contains(hash) &&
-                    !m_d3d11.injected.contains(hash) &&
-                    !m_d3d11.override_views.contains(hash) &&
-                    !m_failed_injections.contains(hash))
-                {
-                    m_pending_injections.insert_or_assign(hash, /*is_dx11=*/true);
-                }
-            }
+                note_pending_injection(hash);
         }
 
         size_t refreshed = 0;
@@ -676,9 +659,7 @@ namespace TextureToolkit
             if (concrete != image.GetMetadata().format)
                 image.OverrideFormat(concrete);
 
-            std::error_code ec;
-            std::filesystem::create_directories(get_dump_dir(), ec);
-            const std::filesystem::path dds_path = get_dump_dir() / (format_hash_hex(hash) + ".dds");
+            const std::filesystem::path dds_path = dump_path_for(hash);
 
             hr = DirectX::SaveToDDSFile(image.GetImages(), image.GetImageCount(), image.GetMetadata(),
                                         DirectX::DDS_FLAGS_NONE, dds_path.wstring().c_str());

@@ -63,6 +63,37 @@ namespace TextureToolkit
         }
     }
 
+    void TextureManagerBase::note_pending_injection(uint32_t hash)
+    {
+        if (!enable_injection || hash == 0)
+            return;
+        if (!m_injected_files.contains(hash) || m_failed_injections.contains(hash))
+            return;
+        if (branch_has_replacement(hash))
+            return;
+
+        m_pending_injections.insert(hash);
+    }
+
+    std::filesystem::path TextureManagerBase::dump_path_for(uint32_t hash) const
+    {
+        std::error_code ec;
+        std::filesystem::create_directories(m_dump_dir, ec);
+        return m_dump_dir / (format_hash_hex(hash) + ".dds");
+    }
+
+    void TextureManagerBase::note_dumped(uint32_t hash, const std::string &path)
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        auto it = m_tracked_textures.find(hash);
+        if (it == m_tracked_textures.end())
+            return;
+
+        it->second.filepath_dumped = path;
+        if (it->second.status != TextureStatus::INJECTED)
+            it->second.status = TextureStatus::DUMPED;
+    }
+
     void TextureManagerBase::queue_pending_dump(uint32_t hash)
     {
         m_pending_dumps.insert(hash);

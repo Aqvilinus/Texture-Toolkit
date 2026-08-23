@@ -17,9 +17,11 @@ namespace TextureToolkit
 
         // initial_data/mip_levels come from CreateTexture2D: the one moment every mip level is in
         // hand, so an auto-dump taken there matches what the game loaded.
-        void register_texture11(ID3D11Device *device, ID3D11Resource *resource, const void *pixel_data,
-                                UINT width, UINT height, DXGI_FORMAT format, UINT pitch,
-                                const D3D11_SUBRESOURCE_DATA *initial_data = nullptr, UINT mip_levels = 1);
+        // The hash it settled on, or 0 when the texture was not tracked -- so a caller that needs
+        // it does not have to ask the resource for its tag again.
+        uint32_t register_texture11(ID3D11Device *device, ID3D11Resource *resource, const void *pixel_data,
+                                    UINT width, UINT height, DXGI_FORMAT format, UINT pitch,
+                                    const D3D11_SUBRESOURCE_DATA *initial_data = nullptr, UINT mip_levels = 1);
         // 0 when the pointer is not one of ours. Fills override_out with the view to substitute
         // for this one, when there is one: the caller has already paid for the slot lookup.
         uint32_t note_referenced(void *resource, void *&override_out);

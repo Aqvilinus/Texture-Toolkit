@@ -198,6 +198,18 @@ namespace TextureToolkit
         // thread and must not be able to take m_mutex twice by accident.
         void track(uint32_t hash, TextureDetails details);             // m_mutex held
         void set_status(uint32_t hash, TextureStatus status);          // m_mutex held
+
+        // Queues a hash for the one replacement built per frame, if a file exists for it, injection
+        // is on, the file has not already failed, and the branch has not already built one. The
+        // rule lived in three places and had begun to differ between them. m_mutex held.
+        void note_pending_injection(uint32_t hash);
+
+        // Where a dump for this hash goes, creating the folder if it is not there. The name is the
+        // one scan_inject_dir has to be able to parse back, so it is built in one place.
+        std::filesystem::path dump_path_for(uint32_t hash) const;
+
+        // Records a written dump. Takes m_mutex, and leaves an injected texture reading as injected.
+        void note_dumped(uint32_t hash, const std::string &path);
         bool take_pending_dump(uint32_t hash);
         void queue_pending_dump(uint32_t hash);                         // m_mutex held
         void queue_readback(uint32_t hash, IDirect3DBaseTexture9 *tex9, ID3D11ShaderResourceView *srv11);
@@ -250,7 +262,7 @@ namespace TextureToolkit
 
 
 
-        std::unordered_map<uint32_t, bool> m_pending_injections; // hash -> is_dx11
+        std::unordered_set<uint32_t> m_pending_injections;
 
         // Hashes whose inject file failed to load/create, so we do not retry a broken file every
         // frame. Cleared by rescan_injected.
