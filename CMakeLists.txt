@@ -94,9 +94,17 @@ set(SOURCES
 
 add_library(TextureToolkit SHARED ${SOURCES})
 
+# The architecture is in the file name because a 32-bit game needs the 32-bit build and the two are
+# otherwise indistinguishable once they leave their build folders.
+if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+    set(TT_ARCH_SUFFIX "x64")
+else()
+    set(TT_ARCH_SUFFIX "x86")
+endif()
+
 set_target_properties(TextureToolkit PROPERTIES
     PREFIX ""
-    OUTPUT_NAME "TextureToolkit"
+    OUTPUT_NAME "TextureToolkit-${TT_ARCH_SUFFIX}"
     SUFFIX ".asi")
 
 target_include_directories(TextureToolkit PRIVATE

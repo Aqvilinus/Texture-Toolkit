@@ -44,7 +44,7 @@ cmake -B build32 -A Win32
 cmake --build build32 --config Release
 ```
 
-Output: `build32/Release/TextureToolkit.asi`.
+Output: `build32/Release/TextureToolkit-x86.asi`.
 
 ### 64-bit (x64)
 
@@ -53,7 +53,7 @@ cmake -B build64 -A x64
 cmake --build build64 --config Release
 ```
 
-Output: `build64/Release/TextureToolkit.asi`.
+Output: `build64/Release/TextureToolkit-x64.asi`.
 
 Match the build to the game: a 32-bit game needs the x86 build.
 

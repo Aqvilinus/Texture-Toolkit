@@ -30,14 +30,10 @@ jobs:
       - name: Build
         run: cmake --build build --config Release
 
-      - name: Name the binary after its architecture
-        run: |
-          Copy-Item build/Release/TextureToolkit.asi TextureToolkit-${{ matrix.arch }}.asi
-
       - uses: actions/upload-artifact@v4
         with:
           name: TextureToolkit-${{ matrix.arch }}
-          path: TextureToolkit-${{ matrix.arch }}.asi
+          path: build/Release/TextureToolkit-${{ matrix.arch }}.asi
           if-no-files-found: error
 
   release:
