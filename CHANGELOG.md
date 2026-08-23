@@ -8,22 +8,22 @@ at commit `796c446`.
 > upstream did; only Direct3D 11 moved to creation-time replacement. No Direct3D 9 title has been
 > run against this fork.
 
-## Replacement at texture creation (Direct3D 11)
+## Replacement (Direct3D 11)
 
-- Upstream substituted at bind time: every texture of every draw call resolved a hash and looked up
-  a replacement. Replacement now happens in `CreateTexture2D`, the one moment a texture's pixels
-  are in hand and nothing has drawn with them, and binds cost a lock-free pointer lookup. A menu
-  that redraws the same art every frame went from single-digit fps to the frame cap.
-- The shader resource view the game asks for is corrected to the replacement's format and mip
-  count, keeping the game's sRGB intent rather than the file's.
-- Anything that misses that moment -- a texture created empty and filled through `Map`/`Unmap`, one
-  whose usage rules it out, or a file that only turns up later -- is replaced by putting a view of
-  our own in front of the original at bind time. The original is never touched, which is what makes
-  it work at all: game art is usually created immutable and cannot be copied into. Size, format and
-  mip count are free to differ. It is built one per frame off the draw call, and costs an atomic
-  load in a table lookup the bind hook was already doing.
-- The replacement comes off by itself when the game rewrites the texture underneath it, and the new
-  content is queued for one of its own.
+Upstream decided at bind time: every texture of every draw call resolved a hash and looked up a
+replacement. The decision is made once per texture here, and binds cost a lock-free pointer lookup.
+A menu that redraws the same art every frame went from single-digit fps to the frame cap.
+
+- **When the pixels arrive with the texture**, it is replaced in `CreateTexture2D`, before the
+  original reaches the GPU. The view the game then asks for is corrected to the replacement's
+  format and mip count, keeping the game's sRGB intent rather than the file's.
+- **Otherwise a view of our own goes in front of the original at bind time** -- for a texture
+  created empty and filled through `Map`/`Unmap`, one whose usage rules it out, or a file that
+  turned up after the game had already created its texture. The original is never touched, which is
+  what makes this work at all: game art is usually immutable and cannot be copied into. Size, format
+  and mip count are free to differ. Built one per frame off the draw call.
+- It comes off by itself when the game rewrites the texture underneath it, and the new content is
+  queued for a replacement of its own.
 
 ## What that design gives up
 
