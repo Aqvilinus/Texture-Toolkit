@@ -16,18 +16,17 @@ at commit `796c446`.
   that redraws the same art every frame went from single-digit fps to the frame cap.
 - The shader resource view the game asks for is corrected to the replacement's format and mip
   count, keeping the game's sRGB intent rather than the file's.
-- A file that turns up for a texture the game has already created is applied by putting a view of
-  our own in front of it at bind time, leaving the original untouched -- which is what makes it
-  work at all, since game art is usually created immutable and cannot be copied into. Size, format
-  and mip count are free to differ. It is built one per frame off the draw call, and costs an
-  atomic load in a table lookup the bind hook was already doing.
+- Anything that misses that moment -- a texture created empty and filled through `Map`/`Unmap`, one
+  whose usage rules it out, or a file that only turns up later -- is replaced by putting a view of
+  our own in front of the original at bind time. The original is never touched, which is what makes
+  it work at all: game art is usually created immutable and cannot be copied into. Size, format and
+  mip count are free to differ. It is built one per frame off the draw call, and costs an atomic
+  load in a table lookup the bind hook was already doing.
+- The replacement comes off by itself when the game rewrites the texture underneath it, and the new
+  content is queued for one of its own.
 
 ## What that design gives up
 
-- **On Direct3D 11, a texture is replaced at creation only if it arrives with its pixels** -- as a
-  shader resource, with default or immutable usage. One created empty and filled through
-  `Map`/`Unmap` misses that moment; Reload still reaches it, and the game rewriting it takes the
-  replacement back off.
 - **Only the pixel, vertex and compute stages are watched.** A texture bound to no other stage than
   geometry or tessellation never appears at all.
 - **D3D9 auto-dump carries the top mip only.** The game delivers one level per `LockRect` and

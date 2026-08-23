@@ -426,6 +426,18 @@ namespace TextureToolkit
 
         track(hash, details);
 
+        // A file exists but this texture did not get a replacement when it was created -- it was
+        // created empty and filled later, or it is not a shader resource, or its usage ruled it
+        // out. Queue a replacement view instead; nothing here waits for Reload.
+        if (enable_injection &&
+            m_injected_files.contains(hash) &&
+            !m_d3d11.injected.contains(hash) &&
+            !m_d3d11.override_views.contains(hash) &&
+            !m_failed_injections.contains(hash))
+        {
+            m_pending_injections.insert_or_assign(hash, /*is_dx11=*/true);
+        }
+
         if (auto_dump)
         {
             // Every level the game uploaded, not just the first: this is the one moment the whole

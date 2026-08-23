@@ -485,18 +485,18 @@ namespace TextureToolkit
                         Logger::get().debug("[D3D11Hook] Hooked_Unmap: Registering texture=0x" + Logger::fmt("%p", (pResource)));
                     }
 
-                    // Whatever we were showing in this texture's place described content the game
-                    // has just overwritten, so it goes; re-registering below decides the new one.
+                    // What this texture used to be, so the replacement can be taken back off if the
+                    // game has actually changed it. Only then: a texture rewritten every frame with
+                    // the same content would otherwise drop and rebuild its replacement every frame.
                     D3D11TextureManager &tm = D3D11TextureManager::get();
-                    if (const uint32_t previous = tm.resource_hash(pResource))
-                        tm.drop_override(previous);
+                    const uint32_t previous = tm.resource_hash(pResource);
 
                     ID3D11Device *device = nullptr;
                     context->GetDevice(&device);
 
                     if (device != nullptr)
                     {
-                        D3D11TextureManager::get().register_texture11(
+                        tm.register_texture11(
                             device,
                             pResource,
                             data.mapped.pData,
@@ -506,6 +506,12 @@ namespace TextureToolkit
                             data.mapped.RowPitch
                         );
                         device->Release();
+
+                        // Registration has decided what the texture is now. If that is something
+                        // else, the replacement standing in for the old content no longer describes
+                        // anything, and registration has already queued one for the new content.
+                        if (previous != 0 && previous != tm.resource_hash(pResource))
+                            tm.drop_override(previous);
                     }
                 }
 
