@@ -16,16 +16,20 @@ at commit `796c446`.
   that redraws the same art every frame went from single-digit fps to the frame cap.
 - The shader resource view the game asks for is corrected to the replacement's format and mip
   count, keeping the game's sRGB intent rather than the file's.
+- A file that turns up for a texture the game has already created is applied by putting a view of
+  our own in front of it at bind time, leaving the original untouched -- which is what makes it
+  work at all, since game art is usually created immutable and cannot be copied into. Size, format
+  and mip count are free to differ. It is built one per frame off the draw call, and costs an
+  atomic load in a table lookup the bind hook was already doing.
 
 ## What that design gives up
 
-- **On Direct3D 11, only textures created with their pixels can be replaced** -- as a shader
-  resource, with default or immutable usage. One created empty and filled through `Map`/`Unmap` is
-  tracked and dumped, but not replaced.
-- **On Direct3D 11, a DDS added while the game runs reaches only hashes that already have a
-  replacement.** Reload copies the new contents into the textures the game is holding; a hash that
-  had no replacement yet, or a file whose size, format or mip count changed, needs a restart. The
-  D3D9 path, still deciding at bind time, picks up either.
+- **On Direct3D 11, a texture is replaced at creation only if it arrives with its pixels** -- as a
+  shader resource, with default or immutable usage. One created empty and filled through
+  `Map`/`Unmap` misses that moment; Reload still reaches it, and the game rewriting it takes the
+  replacement back off.
+- **Only the pixel, vertex and compute stages are watched.** A texture bound to no other stage than
+  geometry or tessellation never appears at all.
 - **D3D9 auto-dump carries the top mip only.** The game delivers one level per `LockRect` and
   nothing says when the chain is complete -- unless the game has `d3dx9_43.dll`, in which case the
   texture comes from D3DX complete and the whole chain is written.
@@ -51,8 +55,8 @@ at commit `796c446`.
 ## The panel
 
 - The texture list sorts by hash, size, mips, format or status.
-- Reload rescans `TT/inject`. On Direct3D 11 it copies the new contents into the textures the game
-  already holds; on Direct3D 9 it drops the replacements and the next draw rebuilds them.
+- Reload rescans `TT/inject` and applies what changed, including files added since the game
+  started. No restart, whatever the new file's size or format.
 - The panel, the startup banner and the log name the key `HotKey` is actually set to, instead of
   saying INSERT regardless.
 - On Direct3D 11, with neither panel nor banner on screen, the overlay skips the ImGui frame and
