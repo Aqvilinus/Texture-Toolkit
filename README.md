@@ -65,6 +65,23 @@ Match the build to the game: a 32-bit game needs the x86 build.
 
 To replace a texture, read its hash from the panel (or dump it first), edit the `.dds`, and place it in `TT/inject` named after the hash, for example `5D3E2CCE.dds` or `0x5D3E2CCE.dds`. Export it with a full mip chain if it is block-compressed. The `TT` folder name can be changed with `ResourceRoot` in the ini.
 
+## Sharing a texture mod
+
+A texture is identified by a hash of its original pixels, so an `inject` folder works on anyone
+else's copy of the same game. Ship the `.dds` files and tell people to drop them in `TT/inject`.
+
+Two things decide whether your hashes match on someone else's machine, and the player's GPU is not
+one of them -- the hash covers a texture's tightly packed rows and never the driver's row padding:
+
+- **Game version.** A patch that reships texture assets changes their contents, and with them their
+  hashes. State the version you built against.
+- **Texture quality settings.** Some games upload a smaller top mip at lower settings, which is
+  different pixel data and a different hash. State the setting you authored at.
+
+Export replacements with a full mip chain. A block-compressed replacement without mips cannot have
+them regenerated, so it samples its top level at every distance and shimmers in motion -- and a
+higher-resolution replacement aliases more than the original did, not less.
+
 ## Configuration
 
 `TextureToolkit.ini` is created next to the `.asi` on first run:
