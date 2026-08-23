@@ -574,6 +574,18 @@ namespace TextureToolkit
                         }
                     }
 
+                    // Only level 0. A surface reached through GetSurfaceLevel(n) carries mip n,
+                    // and registering it would hash those pixels and stamp the result on the parent
+                    // texture -- so the tag the bind hook reads would name a mip instead of the
+                    // texture, and no replacement would ever be found for it.
+                    D3DSURFACE_DESC top = {};
+                    if (FAILED(texture->GetLevelDesc(0, &top)) ||
+                        top.Width != desc.Width || top.Height != desc.Height)
+                    {
+                        texture->Release();
+                        return hr;
+                    }
+
                     // Rewritten constantly (UI, fonts), so a content hash identifies nothing.
                     if ((desc.Usage & D3DUSAGE_DYNAMIC) == 0)
                     {

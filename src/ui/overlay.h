@@ -1,5 +1,7 @@
 #pragma once
 
+#include <atomic>
+
 #include <string>
 #include <windows.h>
 
@@ -16,11 +18,12 @@ namespace TextureToolkit
         // DirectInput and hide the hardware cursor.
         static void feed_overlay_mouse(HWND hwnd);
 
-        static bool is_visible() { return s_show_ui; }
-        static void toggle_visibility() { s_show_ui = !s_show_ui; }
-        static void set_visible(bool visible) { s_show_ui = visible; }
+        // Toggled from whichever thread polls the hotkey, read by the one drawing the frame.
+        static bool is_visible() { return s_show_ui.load(std::memory_order_relaxed); }
+        static void toggle_visibility() { s_show_ui.store(!is_visible(), std::memory_order_relaxed); }
+        static void set_visible(bool visible) { s_show_ui.store(visible, std::memory_order_relaxed); }
 
     private:
-        static bool s_show_ui;
+        static std::atomic<bool> s_show_ui;
     };
 }

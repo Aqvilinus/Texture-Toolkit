@@ -58,12 +58,28 @@ namespace TextureToolkit
         }
         catch (...)
         {
+            m_config.hotkey = 0;
+        }
+
+        // A parse that succeeds is not a key that works: HotKey=0x0 or anything past the highest
+        // virtual-key code leaves the panel with no way to open and nothing in the log to say why.
+        if (m_config.hotkey == 0 || m_config.hotkey > 0xFE)
+        {
+            Logger::get().warn("[Config] HotKey=" + std::filesystem::path(hotkey_str).string() +
+                               " is not a virtual-key code; using INSERT.");
             m_config.hotkey = VK_INSERT;
         }
 
         wchar_t root_str[MAX_PATH] = L"";
         GetPrivateProfileStringW(L"TextureToolkit", L"ResourceRoot", L"TT", root_str, MAX_PATH, ini_w);
         m_config.resource_root = root_str;
+
+        // Empty would put dump/ and inject/ straight into the game folder.
+        if (m_config.resource_root.empty())
+        {
+            Logger::get().warn("[Config] ResourceRoot is empty; using TT.");
+            m_config.resource_root = L"TT";
+        }
 
         m_config.enable_injection = GetPrivateProfileIntW(L"TextureToolkit", L"EnableInjection", 1, ini_w) != 0;
         m_config.auto_dump = GetPrivateProfileIntW(L"TextureToolkit", L"AutoDump", 0, ini_w) != 0;

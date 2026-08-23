@@ -43,7 +43,9 @@ namespace TextureToolkit
         // game's first D3D call, and an ASI has no earlier entry point. Only device creation is
         // deferred to a thread, because it deadlocks here.
         Logger::get().init(asi_dir);
-        Logger::get().info("[Main] Texture Toolkit v" TT_VERSION " initializing...");
+        Logger::get().info("[Main] Texture Toolkit v" TT_VERSION " (" TT_ARCH ", built " __DATE__ " " __TIME__ ") initializing...");
+        Logger::get().info("[Main] Host: " + std::filesystem::path(exe_path).string());
+        Logger::get().info("[Main] Loaded from: " + std::filesystem::path(module_path).string());
 
         ConfigManager::get().init(asi_dir);
         Logger::get().set_min_level(ConfigManager::get().get_config().verbose ? LogLevel::Debug : LogLevel::Info);

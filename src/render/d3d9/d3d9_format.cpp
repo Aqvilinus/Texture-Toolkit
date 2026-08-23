@@ -2,6 +2,8 @@
 #include "texture/texture_hash.h"
 
 #include <vector>
+#include "core/logger.h"
+#include <unordered_set>
 
 namespace TextureToolkit
 {
@@ -30,58 +32,146 @@ namespace TextureToolkit
         }
     }
 
+    // Bytes per pixel, or 0 for a format we do not know. Zero matters: the old code assumed four
+    // for anything unlisted, so a one- or two-byte format made the row four times too long and the
+    // copy below read past the end of the locked rectangle.
+    static UINT bytes_per_pixel(D3DFORMAT format)
+    {
+        switch (format)
+        {
+        case D3DFMT_A8:
+        case D3DFMT_P8:
+        case D3DFMT_L8:
+        case D3DFMT_A4L4:
+        case D3DFMT_R3G3B2:
+            return 1;
+
+        case D3DFMT_R5G6B5:
+        case D3DFMT_X1R5G5B5:
+        case D3DFMT_A1R5G5B5:
+        case D3DFMT_A4R4G4B4:
+        case D3DFMT_X4R4G4B4:
+        case D3DFMT_A8R3G3B2:
+        case D3DFMT_A8P8:
+        case D3DFMT_A8L8:
+        case D3DFMT_V8U8:
+        case D3DFMT_L6V5U5:
+        case D3DFMT_CxV8U8:
+        case D3DFMT_L16:
+        case D3DFMT_R16F:
+        case D3DFMT_D16:
+        case D3DFMT_D16_LOCKABLE:
+        case D3DFMT_D15S1:
+        case D3DFMT_INDEX16:
+            return 2;
+
+        case D3DFMT_R8G8B8:
+            return 3;
+
+        case D3DFMT_A8R8G8B8:
+        case D3DFMT_X8R8G8B8:
+        case D3DFMT_A8B8G8R8:
+        case D3DFMT_X8B8G8R8:
+        case D3DFMT_A2B10G10R10:
+        case D3DFMT_A2R10G10B10:
+        case D3DFMT_G16R16:
+        case D3DFMT_X8L8V8U8:
+        case D3DFMT_Q8W8V8U8:
+        case D3DFMT_V16U16:
+        case D3DFMT_A2W10V10U10:
+        case D3DFMT_G16R16F:
+        case D3DFMT_R32F:
+        case D3DFMT_D32:
+        case D3DFMT_D32F_LOCKABLE:
+        case D3DFMT_D24S8:
+        case D3DFMT_D24X8:
+        case D3DFMT_D24X4S4:
+        case D3DFMT_D24FS8:
+        case D3DFMT_INDEX32:
+            return 4;
+
+        case D3DFMT_A16B16G16R16:
+        case D3DFMT_Q16W16V16U16:
+        case D3DFMT_A16B16G16R16F:
+        case D3DFMT_G32R32F:
+            return 8;
+
+        case D3DFMT_A32B32G32R32F:
+            return 16;
+
+        default:
+            return 0;
+        }
+    }
+
+    // Bytes per 4x4 block, or 0 when the format is not block-compressed. ATI1 and ATI2 are FourCC
+    // codes rather than enumerators, and were falling through to the four-bytes-per-pixel path.
+    static UINT block_bytes(D3DFORMAT format)
+    {
+        switch (static_cast<DWORD>(format))
+        {
+        case D3DFMT_DXT1:
+        case MAKEFOURCC('A', 'T', 'I', '1'):
+        case MAKEFOURCC('B', 'C', '4', 'U'):
+        case MAKEFOURCC('B', 'C', '4', 'S'):
+            return 8;
+
+        case D3DFMT_DXT2:
+        case D3DFMT_DXT3:
+        case D3DFMT_DXT4:
+        case D3DFMT_DXT5:
+        case MAKEFOURCC('A', 'T', 'I', '2'):
+        case MAKEFOURCC('B', 'C', '5', 'U'):
+        case MAKEFOURCC('B', 'C', '5', 'S'):
+            return 16;
+
+        default:
+            return 0;
+        }
+    }
+
     uint32_t hash_pixels(const void *pixel_data, UINT width, UINT height, D3DFORMAT format, UINT pitch)
     {
         if (pixel_data == nullptr || width == 0 || height == 0)
             return 0;
 
+        UINT rows = height;
+        UINT row_bytes = 0;
+
+        if (const UINT block = block_bytes(format))
+        {
+            rows = (height + 3) / 4;
+            row_bytes = ((width + 3) / 4) * block;
+        }
+        else if (const UINT bpp = bytes_per_pixel(format))
+        {
+            row_bytes = width * bpp;
+        }
+        else
+        {
+            // Guessing a size here is a read past the end of the locked rectangle. A texture in a
+            // format we cannot measure is left untracked instead.
+            static std::unordered_set<DWORD> s_reported;
+            if (s_reported.insert(static_cast<DWORD>(format)).second)
+                Logger::get().warn("[D3D9Format] Not tracking textures in " + format_name(format) + ": unknown pixel size.");
+            return 0;
+        }
+
         const uint8_t *src = static_cast<const uint8_t *>(pixel_data);
+        if (pitch == 0 || pitch == row_bytes)
+            return compute_crc32c(src, static_cast<size_t>(row_bytes) * rows);
 
-        if (format == D3DFMT_DXT1 || format == D3DFMT_DXT2 || format == D3DFMT_DXT3 || format == D3DFMT_DXT4 || format == D3DFMT_DXT5)
+        // Row padding is the driver's choice and can be uninitialised, so only the bytes that carry
+        // pixels are hashed -- the same rows Special K hashes, which is what keeps the names shared.
+        std::vector<uint8_t> tight;
+        tight.reserve(static_cast<size_t>(row_bytes) * rows);
+        for (UINT y = 0; y < rows; ++y)
         {
-            UINT block_size = (format == D3DFMT_DXT1) ? 8 : 16;
-            UINT blocks_x = (width + 3) / 4;
-            UINT blocks_y = (height + 3) / 4;
-            UINT row_bytes = blocks_x * block_size;
-
-            std::vector<uint8_t> clean_buffer;
-            clean_buffer.reserve(row_bytes * blocks_y);
-
-            for (UINT y = 0; y < blocks_y; ++y)
-            {
-                const uint8_t *row_src = src + y * pitch;
-                clean_buffer.insert(clean_buffer.end(), row_src, row_src + row_bytes);
-            }
-
-            return compute_crc32c(clean_buffer.data(), clean_buffer.size());
+            const uint8_t *row = src + static_cast<size_t>(y) * pitch;
+            tight.insert(tight.end(), row, row + row_bytes);
         }
 
-        UINT bpp = 4;
-        if (format == D3DFMT_R5G6B5 || format == D3DFMT_X1R5G5B5 || format == D3DFMT_A1R5G5B5 || format == D3DFMT_A4R4G4B4 || format == D3DFMT_L16)
-        {
-            bpp = 2;
-        }
-        else if (format == D3DFMT_L8 || format == D3DFMT_A8 || format == D3DFMT_P8)
-        {
-            bpp = 1;
-        }
-
-        UINT row_bytes = width * bpp;
-        if (pitch == row_bytes || pitch == 0)
-        {
-            return compute_crc32c(src, static_cast<size_t>(pitch > 0 ? pitch : row_bytes) * height);
-        }
-
-        std::vector<uint8_t> clean_buffer;
-        clean_buffer.reserve(row_bytes * height);
-
-        for (UINT y = 0; y < height; ++y)
-        {
-            const uint8_t *row_src = src + y * pitch;
-            clean_buffer.insert(clean_buffer.end(), row_src, row_src + row_bytes);
-        }
-
-        return compute_crc32c(clean_buffer.data(), clean_buffer.size());
+        return compute_crc32c(tight.data(), tight.size());
     }
 
     DXGI_FORMAT to_dxgi(D3DFORMAT format)

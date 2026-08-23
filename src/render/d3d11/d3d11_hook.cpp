@@ -253,6 +253,11 @@ namespace TextureToolkit
                 (*view)->GetDesc(&vd);
                 if (vd.Format != DXGI_FORMAT_UNKNOWN)
                     tm.note_view_format(hash, static_cast<uint32_t>(vd.Format), format_name(vd.Format));
+
+                // Anything else -- an array, a cube, a 3D volume -- would be sampled through a
+                // replacement that is a plain 2D texture, which is not what the shader asked for.
+                if (vd.ViewDimension != D3D11_SRV_DIMENSION_TEXTURE2D)
+                    tm.forget_owned(*view);
             }
         }
     }

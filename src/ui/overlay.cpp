@@ -15,7 +15,7 @@
 
 namespace TextureToolkit
 {
-    bool TextureToolkitUI::s_show_ui = false; // Default hidden; the configured hotkey toggles it
+    std::atomic<bool> TextureToolkitUI::s_show_ui{false}; // Default hidden; the configured hotkey toggles it
     static std::string s_status_message = "Ready";
     static uint32_t s_selected_texture_hash = 0;
     static char s_filter_buf[64] = "";
@@ -280,7 +280,14 @@ namespace TextureToolkit
 
         ImGui::SetNextWindowSize(ImVec2(920, 620), ImGuiCond_FirstUseEver);
         const std::string title = "Texture Toolkit  (" + hotkey_name(ConfigManager::get().get_config().hotkey) + " to close)";
-        if (!ImGui::Begin(title.c_str(), &s_show_ui))
+
+        // ImGui writes through this to close the window, so it gets a plain bool and the result is
+        // published back to the atomic the input side reads.
+        bool open = is_visible();
+        const bool drawing = ImGui::Begin(title.c_str(), &open);
+        set_visible(open);
+
+        if (!drawing)
         {
             ImGui::End();
             return;

@@ -27,6 +27,9 @@ namespace TextureToolkit
         void note_dump_candidate(ID3D11ShaderResourceView *view, uint32_t hash);
         void register_owned_view(void *view, uint32_t hash);
 
+        // Drops a pointer from the table, so a reused address cannot inherit what it named before.
+        void forget_owned(void *key);
+
         // The game has rewritten this texture, so whatever we were showing in its place describes
         // content that is gone. Called from the unmap hook.
         void drop_override(uint32_t hash);

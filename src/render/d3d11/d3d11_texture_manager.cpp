@@ -118,6 +118,34 @@ namespace TextureToolkit
         owned->count++;
     }
 
+    void D3D11TextureManager::forget_owned(void *key)
+    {
+        std::lock_guard<std::mutex> lock(m_d3d11.mutex);
+        m_d3d11.views.erase(key);
+
+        const D3D11State::OwnedSet *current = m_d3d11.snapshot.load(std::memory_order_acquire);
+        if (current == nullptr)
+            return;
+
+        // The pointer stays in place: open addressing puts later keys behind it, and removing it
+        // would strand them. Zeroing what it names is enough to make it answer "not ours".
+        D3D11State::OwnedSet *owned = const_cast<D3D11State::OwnedSet *>(current);
+        size_t i = (reinterpret_cast<uintptr_t>(key) >> 4) & owned->mask;
+        while (true)
+        {
+            void *slot = owned->slots[i].load(std::memory_order_relaxed);
+            if (slot == nullptr)
+                return;
+            if (slot == key)
+            {
+                owned->overrides[i].store(nullptr, std::memory_order_release);
+                owned->hashes[i] = 0;
+                return;
+            }
+            i = (i + 1) & owned->mask;
+        }
+    }
+
     void D3D11TextureManager::reset_owned()
     {
         std::lock_guard<std::mutex> lock(m_d3d11.mutex);
@@ -149,8 +177,17 @@ namespace TextureToolkit
 
     void D3D11TextureManager::register_owned_view(void *view, uint32_t hash)
     {
-        if (view == nullptr || hash == 0)
+        if (view == nullptr)
             return;
+
+        // An untracked view at an address we know means the game freed the old one and the system
+        // handed the address out again. Clearing the slot matters more than skipping it: leaving
+        // the old hash there would substitute that texture's replacement for whatever this is now.
+        if (hash == 0)
+        {
+            forget_owned(view);
+            return;
+        }
 
         // insert_or_assign, not emplace: the game frees views and the system hands the same
         // address out again, so an address we already know may now belong to another texture.
