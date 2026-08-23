@@ -28,9 +28,6 @@ namespace TextureToolkit
 
     thread_local bool D3D11Hook::s_inside_injection = false;
 
-    // Defined here rather than beside Hooked_WndProc below, because shutdown() puts it back.
-    static WNDPROC g_orig_wndproc = nullptr;
-
     D3D11Hook &D3D11Hook::get()
     {
         static D3D11Hook instance;
@@ -92,11 +89,7 @@ namespace TextureToolkit
             m_imgui_initialized = false;
         }
 
-        if (m_hwnd && g_orig_wndproc)
-        {
-            SetWindowLongPtr(m_hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(g_orig_wndproc));
-            g_orig_wndproc = nullptr;
-        }
+        InputHook::get().detach_from_window();
 
         m_initialized = false;
     }
@@ -538,40 +531,6 @@ namespace TextureToolkit
 
     // --- The overlay, drawn from render_imgui ---
 
-    static LRESULT CALLBACK Hooked_WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
-    {
-        if (TextureToolkitUI::is_visible())
-        {
-            LRESULT imgui_result = 0;
-            {
-                InputHook::PassthroughScope pass;
-                imgui_result = ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam);
-            }
-
-            // This is how the cursor gets hidden while the panel is up: the backend answers 1 to
-            // mean "I set it, do not pass this on". Dropping that answer let the game re-assert
-            // its own cursor on every pointer move.
-            if (msg == WM_SETCURSOR && imgui_result != 0)
-                return imgui_result;
-
-            if (msg == WM_INPUT)
-                return 0;
-
-            // WM_MENUCHAR sits outside the key range, and letting it through while the panel has
-            // the keyboard is what makes Windows beep at a key pressed with Alt held.
-            if (msg == WM_MENUCHAR)
-                return MNC_CLOSE << 16;
-
-            if ((msg >= WM_KEYFIRST && msg <= WM_KEYLAST) ||
-                (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST))
-            {
-                return 0;
-            }
-        }
-
-        return CallWindowProc(g_orig_wndproc, hWnd, msg, wParam, lParam);
-    }
-
     void D3D11Hook::init_imgui(IDXGISwapChain *swapchain)
     {
         if (m_imgui_initialized || swapchain == nullptr)
@@ -601,7 +560,7 @@ namespace TextureToolkit
 
         if (m_hwnd != nullptr)
         {
-            g_orig_wndproc = reinterpret_cast<WNDPROC>(SetWindowLongPtr(m_hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(Hooked_WndProc)));
+            InputHook::get().attach_to_window(m_hwnd);
         }
 
         ImGui::CreateContext();

@@ -30,6 +30,12 @@ namespace TextureToolkit
         static SHORT real_async_key_state(int vk);
         static SHORT real_key_state(int vk);
 
+        // Filters the game's window while the panel is up. The graphics hooks know which window --
+        // one gets it from a swapchain, the other from the device -- and nothing after that is
+        // theirs, so the procedure and the chain it replaces live here.
+        void attach_to_window(HWND window);
+        void detach_from_window();
+
         // Exempts the current thread from masking for the duration of a scope -- the ImGui backend
         // reads modifier state with GetKeyState itself. Thread-local, so a game polling on another
         // thread stays masked; scoped, so an early return cannot leave it set.
@@ -77,15 +83,10 @@ namespace TextureToolkit
 
         // --- The window message queue ---
         //
-        // Messages are taken away from the game at dispatch, not in the queue, which is where
-        // Special K takes them. It has to be that way round: a key press only becomes a character
-        // when the game's own pump runs TranslateMessage on it, so a message blanked in the queue
-        // is a character never born, and a text field in the panel can never receive one. Left
-        // alone until dispatch, the character appears by itself -- and in the window's encoding,
-        // which is the one the ImGui backend assumes.
-        //
-        // Only raw input is still taken in the queue: nothing translates it, so there is nothing
-        // to wait for.
+        // Input is taken from the game at dispatch, not in the queue. A key press only becomes a
+        // character when the game's own pump runs TranslateMessage on it, so a message blanked in
+        // the queue is a character never born and the panel's text fields stay empty. Raw input is
+        // the exception: nothing translates it, so there is nothing to wait for.
 
         static BOOL WINAPI Hooked_PeekMessageA(LPMSG lpMsg, HWND hWnd, UINT wMsgFilterMin, UINT wMsgFilterMax, UINT wRemoveMsg);
         static BOOL WINAPI Hooked_PeekMessageW(LPMSG lpMsg, HWND hWnd, UINT wMsgFilterMin, UINT wMsgFilterMax, UINT wRemoveMsg);
@@ -96,9 +97,12 @@ namespace TextureToolkit
 
         static BOOL swallow_raw_input(BOOL got_message, LPMSG msg);
 
-        // Feeds the message to the overlay and says whether the game's window procedure should be
-        // skipped for it.
-        static bool overlay_takes(const MSG *msg);
+        // Hands the message to the overlay and says whether the game should be denied it, with the
+        // answer the window is owed in its place. One decision for every route a message can take:
+        // the dispatch hooks below, and the window procedure for what never passes through them.
+        static bool overlay_consumed(HWND window, UINT message, WPARAM wparam, LPARAM lparam, LRESULT &result);
+
+        static LRESULT CALLBACK Hooked_WndProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam);
 
         using PeekMessageA_fn = BOOL(WINAPI *)(LPMSG, HWND, UINT, UINT, UINT);
         using PeekMessageW_fn = BOOL(WINAPI *)(LPMSG, HWND, UINT, UINT, UINT);
@@ -113,6 +117,9 @@ namespace TextureToolkit
         GetMessageW_fn m_orig_get_message_w = nullptr;
         DispatchMessageA_fn m_orig_dispatch_message_a = nullptr;
         DispatchMessageW_fn m_orig_dispatch_message_w = nullptr;
+
+        HWND m_window = nullptr;
+        WNDPROC m_orig_wndproc = nullptr;
 
         // --- Polled keyboard state: three ways to ask the same question ---
 

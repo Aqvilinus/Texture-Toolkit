@@ -16,35 +16,6 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 
 namespace TextureToolkit
 {
-    static WNDPROC g_orig_wndproc = nullptr;
-
-    static LRESULT CALLBACK Hooked_WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
-    {
-        if (TextureToolkitUI::is_visible())
-        {
-            {
-                InputHook::PassthroughScope pass;
-                ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam);
-            }
-
-            if (msg == WM_INPUT)
-                return 0;
-
-            // WM_MENUCHAR sits outside the key range, and letting it through while the panel has
-            // the keyboard is what makes Windows beep at a key pressed with Alt held.
-            if (msg == WM_MENUCHAR)
-                return MNC_CLOSE << 16;
-
-            if ((msg >= WM_KEYFIRST && msg <= WM_KEYLAST) ||
-                (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST))
-            {
-                return 0;
-            }
-        }
-
-        return CallWindowProc(g_orig_wndproc, hWnd, msg, wParam, lParam);
-    }
-
     struct LockedTextureData
     {
         IDirect3DTexture9 *texture = nullptr;
@@ -117,11 +88,7 @@ namespace TextureToolkit
             m_imgui_initialized = false;
         }
 
-        if (m_hwnd && g_orig_wndproc)
-        {
-            SetWindowLongPtr(m_hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(g_orig_wndproc));
-            g_orig_wndproc = nullptr;
-        }
+        InputHook::get().detach_from_window();
 
         m_initialized = false;
     }
@@ -671,7 +638,7 @@ namespace TextureToolkit
 
         if (m_hwnd != nullptr)
         {
-            g_orig_wndproc = reinterpret_cast<WNDPROC>(SetWindowLongPtr(m_hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(Hooked_WndProc)));
+            InputHook::get().attach_to_window(m_hwnd);
         }
 
         ImGui::CreateContext();

@@ -56,70 +56,32 @@ namespace TextureToolkit
         HMODULE user32_module = GetModuleHandleA("user32.dll");
         if (user32_module != nullptr)
         {
-            void *pSetCursorPos = reinterpret_cast<void *>(GetProcAddress(user32_module, "SetCursorPos"));
-            if (pSetCursorPos != nullptr)
+            // A row per export, the way the D3DX entry points are installed on the D3D9 side.
+            // Written out one by one, this was eleven copies of the same five lines -- which is
+            // where the wrong pointer ends up beside the wrong name without anyone noticing.
+            const struct Entry
             {
-                HookManager::get().create_hook(pSetCursorPos, &Hooked_SetCursorPos, reinterpret_cast<void **>(&m_orig_set_cursor_pos));
-            }
+                const char *name;
+                void *detour;
+                void **original;
+            } entries[] = {
+                { "SetCursorPos", &Hooked_SetCursorPos, reinterpret_cast<void **>(&m_orig_set_cursor_pos) },
+                { "ClipCursor", &Hooked_ClipCursor, reinterpret_cast<void **>(&m_orig_clip_cursor) },
+                { "PeekMessageA", &Hooked_PeekMessageA, reinterpret_cast<void **>(&m_orig_peek_message_a) },
+                { "PeekMessageW", &Hooked_PeekMessageW, reinterpret_cast<void **>(&m_orig_peek_message_w) },
+                { "GetMessageA", &Hooked_GetMessageA, reinterpret_cast<void **>(&m_orig_get_message_a) },
+                { "GetMessageW", &Hooked_GetMessageW, reinterpret_cast<void **>(&m_orig_get_message_w) },
+                { "DispatchMessageA", &Hooked_DispatchMessageA, reinterpret_cast<void **>(&m_orig_dispatch_message_a) },
+                { "DispatchMessageW", &Hooked_DispatchMessageW, reinterpret_cast<void **>(&m_orig_dispatch_message_w) },
+                { "GetAsyncKeyState", &Hooked_GetAsyncKeyState, reinterpret_cast<void **>(&m_orig_get_async_key_state) },
+                { "GetKeyState", &Hooked_GetKeyState, reinterpret_cast<void **>(&m_orig_get_key_state) },
+                { "GetKeyboardState", &Hooked_GetKeyboardState, reinterpret_cast<void **>(&m_orig_get_keyboard_state) },
+            };
 
-            void *pClipCursor = reinterpret_cast<void *>(GetProcAddress(user32_module, "ClipCursor"));
-            if (pClipCursor != nullptr)
+            for (const Entry &entry : entries)
             {
-                HookManager::get().create_hook(pClipCursor, &Hooked_ClipCursor, reinterpret_cast<void **>(&m_orig_clip_cursor));
-            }
-
-            void *pPeekMessageA = reinterpret_cast<void *>(GetProcAddress(user32_module, "PeekMessageA"));
-            if (pPeekMessageA != nullptr)
-            {
-                HookManager::get().create_hook(pPeekMessageA, &Hooked_PeekMessageA, reinterpret_cast<void **>(&m_orig_peek_message_a));
-            }
-
-            void *pPeekMessageW = reinterpret_cast<void *>(GetProcAddress(user32_module, "PeekMessageW"));
-            if (pPeekMessageW != nullptr)
-            {
-                HookManager::get().create_hook(pPeekMessageW, &Hooked_PeekMessageW, reinterpret_cast<void **>(&m_orig_peek_message_w));
-            }
-
-            void *pGetMessageA = reinterpret_cast<void *>(GetProcAddress(user32_module, "GetMessageA"));
-            if (pGetMessageA != nullptr)
-            {
-                HookManager::get().create_hook(pGetMessageA, &Hooked_GetMessageA, reinterpret_cast<void **>(&m_orig_get_message_a));
-            }
-
-            void *pGetMessageW = reinterpret_cast<void *>(GetProcAddress(user32_module, "GetMessageW"));
-            if (pGetMessageW != nullptr)
-            {
-                HookManager::get().create_hook(pGetMessageW, &Hooked_GetMessageW, reinterpret_cast<void **>(&m_orig_get_message_w));
-            }
-
-            void *pDispatchMessageA = reinterpret_cast<void *>(GetProcAddress(user32_module, "DispatchMessageA"));
-            if (pDispatchMessageA != nullptr)
-            {
-                HookManager::get().create_hook(pDispatchMessageA, &Hooked_DispatchMessageA, reinterpret_cast<void **>(&m_orig_dispatch_message_a));
-            }
-
-            void *pDispatchMessageW = reinterpret_cast<void *>(GetProcAddress(user32_module, "DispatchMessageW"));
-            if (pDispatchMessageW != nullptr)
-            {
-                HookManager::get().create_hook(pDispatchMessageW, &Hooked_DispatchMessageW, reinterpret_cast<void **>(&m_orig_dispatch_message_w));
-            }
-
-            void *pGetAsyncKeyState = reinterpret_cast<void *>(GetProcAddress(user32_module, "GetAsyncKeyState"));
-            if (pGetAsyncKeyState != nullptr)
-            {
-                HookManager::get().create_hook(pGetAsyncKeyState, &Hooked_GetAsyncKeyState, reinterpret_cast<void **>(&m_orig_get_async_key_state));
-            }
-
-            void *pGetKeyState = reinterpret_cast<void *>(GetProcAddress(user32_module, "GetKeyState"));
-            if (pGetKeyState != nullptr)
-            {
-                HookManager::get().create_hook(pGetKeyState, &Hooked_GetKeyState, reinterpret_cast<void **>(&m_orig_get_key_state));
-            }
-
-            void *pGetKeyboardState = reinterpret_cast<void *>(GetProcAddress(user32_module, "GetKeyboardState"));
-            if (pGetKeyboardState != nullptr)
-            {
-                HookManager::get().create_hook(pGetKeyboardState, &Hooked_GetKeyboardState, reinterpret_cast<void **>(&m_orig_get_keyboard_state));
+                if (void *address = reinterpret_cast<void *>(GetProcAddress(user32_module, entry.name)))
+                    HookManager::get().create_hook(address, entry.detour, entry.original);
             }
 
             Logger::get().info("[InputHook] User32 cursor, input and message hooks installed successfully.");
@@ -274,22 +236,74 @@ namespace TextureToolkit
 
     // --- The window message queue ---
 
-    bool InputHook::overlay_takes(const MSG *msg)
+    bool InputHook::overlay_consumed(HWND window, UINT message, WPARAM wparam, LPARAM lparam, LRESULT &result)
     {
-        if (msg == nullptr || !TextureToolkitUI::is_visible())
+        if (!TextureToolkitUI::is_visible())
             return false;
 
-        const bool keyboard_or_mouse =
-            (msg->message >= WM_KEYFIRST && msg->message <= WM_KEYLAST) ||
-            (msg->message >= WM_MOUSEFIRST && msg->message <= WM_MOUSELAST) ||
-            msg->message == WM_MENUCHAR;
+        LRESULT from_backend = 0;
+        {
+            PassthroughScope pass;
+            from_backend = ImGui_ImplWin32_WndProcHandler(window, message, wparam, lparam);
+        }
 
-        if (!keyboard_or_mouse)
-            return false;
+        // The backend answers non-zero to mean it set the cursor itself. Dropping that answer let
+        // the game re-assert its own on every pointer move.
+        if (message == WM_SETCURSOR && from_backend != 0)
+        {
+            result = from_backend;
+            return true;
+        }
 
-        PassthroughScope pass;
-        ImGui_ImplWin32_WndProcHandler(msg->hwnd, msg->message, msg->wParam, msg->lParam);
-        return true;
+        // Sent, never posted, so it arrives only from the menu loop inside user32 -- and left to
+        // the game it is what makes Windows beep at a key pressed with Alt held.
+        if (message == WM_MENUCHAR)
+        {
+            result = MAKELRESULT(0, MNC_CLOSE);
+            return true;
+        }
+
+        if (message == WM_INPUT ||
+            (message >= WM_KEYFIRST && message <= WM_KEYLAST) ||
+            (message >= WM_MOUSEFIRST && message <= WM_MOUSELAST))
+        {
+            result = 0;
+            return true;
+        }
+
+        return false;
+    }
+
+    // Still needed although dispatch is intercepted below: user32 runs modal loops of its own for
+    // menus and for moving and sizing a window, and those pump messages without calling the
+    // exported DispatchMessage. Nor does a message that is sent rather than posted pass through it.
+    LRESULT CALLBACK InputHook::Hooked_WndProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam)
+    {
+        LRESULT result = 0;
+        if (overlay_consumed(window, message, wparam, lparam, result))
+            return result;
+
+        return CallWindowProc(get().m_orig_wndproc, window, message, wparam, lparam);
+    }
+
+    void InputHook::attach_to_window(HWND window)
+    {
+        if (window == nullptr || m_orig_wndproc != nullptr)
+            return;
+
+        m_window = window;
+        m_orig_wndproc = reinterpret_cast<WNDPROC>(
+            SetWindowLongPtr(window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(Hooked_WndProc)));
+    }
+
+    void InputHook::detach_from_window()
+    {
+        if (m_window == nullptr || m_orig_wndproc == nullptr)
+            return;
+
+        SetWindowLongPtr(m_window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(m_orig_wndproc));
+        m_orig_wndproc = nullptr;
+        m_window = nullptr;
     }
 
     BOOL InputHook::swallow_raw_input(BOOL got_message, LPMSG msg)
@@ -323,7 +337,8 @@ namespace TextureToolkit
     // so the window keeps behaving like a window. This is where Special K takes input away too.
     LRESULT WINAPI InputHook::Hooked_DispatchMessageA(const MSG *lpMsg)
     {
-        if (overlay_takes(lpMsg))
+        LRESULT ignored = 0;
+        if (lpMsg != nullptr && overlay_consumed(lpMsg->hwnd, lpMsg->message, lpMsg->wParam, lpMsg->lParam, ignored))
             return DefWindowProcA(lpMsg->hwnd, lpMsg->message, lpMsg->wParam, lpMsg->lParam);
 
         return get().m_orig_dispatch_message_a(lpMsg);
@@ -331,7 +346,8 @@ namespace TextureToolkit
 
     LRESULT WINAPI InputHook::Hooked_DispatchMessageW(const MSG *lpMsg)
     {
-        if (overlay_takes(lpMsg))
+        LRESULT ignored = 0;
+        if (lpMsg != nullptr && overlay_consumed(lpMsg->hwnd, lpMsg->message, lpMsg->wParam, lpMsg->lParam, ignored))
             return DefWindowProcW(lpMsg->hwnd, lpMsg->message, lpMsg->wParam, lpMsg->lParam);
 
         return get().m_orig_dispatch_message_w(lpMsg);
