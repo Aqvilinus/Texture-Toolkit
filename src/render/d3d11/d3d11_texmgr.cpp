@@ -164,6 +164,24 @@ namespace TextureToolkit
             apply_override_locked(hash, it->second.Get());
     }
 
+    void D3D11TextureManager::drop_override(uint32_t hash)
+    {
+        std::lock_guard<std::mutex> lock(m_d3d11.mutex);
+        if (m_d3d11.override_views.erase(hash) == 0)
+            return;
+
+        const D3D11State::OwnedSet *current = m_d3d11.snapshot.load(std::memory_order_acquire);
+        if (current == nullptr)
+            return;
+
+        D3D11State::OwnedSet *owned = const_cast<D3D11State::OwnedSet *>(current);
+        for (size_t i = 0; i <= owned->mask; ++i)
+        {
+            if (owned->slots[i].load(std::memory_order_relaxed) != nullptr && owned->hashes[i] == hash)
+                owned->overrides[i].store(nullptr, std::memory_order_release);
+        }
+    }
+
     void D3D11TextureManager::apply_override_locked(uint32_t hash, ID3D11ShaderResourceView *view)
     {
         const D3D11State::OwnedSet *current = m_d3d11.snapshot.load(std::memory_order_acquire);

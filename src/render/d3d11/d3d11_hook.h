@@ -74,9 +74,19 @@ namespace TextureToolkit
         static HRESULT STDMETHODCALLTYPE Hooked_CreateShaderResourceView(ID3D11Device *device, ID3D11Resource *pResource, const D3D11_SHADER_RESOURCE_VIEW_DESC *pDesc, ID3D11ShaderResourceView **ppSRView);
         static void STDMETHODCALLTYPE Hooked_PSSetShaderResources(ID3D11DeviceContext *context, UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews);
 
+        // A texture sampled only in a vertex or compute shader is never bound to the pixel stage,
+        // so without these it never appears on screen as far as the panel is concerned. The other
+        // stages are not watched: art does not arrive through them.
+        static void STDMETHODCALLTYPE Hooked_VSSetShaderResources(ID3D11DeviceContext *context, UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews);
+        static void STDMETHODCALLTYPE Hooked_CSSetShaderResources(ID3D11DeviceContext *context, UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews);
+
+        static void bind_shader_resources(PSSetShaderResources_fn original, ID3D11DeviceContext *context, UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews);
+
         CreateTexture2D_fn m_orig_create_texture2d = nullptr;
         CreateShaderResourceView_fn m_orig_create_shader_resource_view = nullptr;
         PSSetShaderResources_fn m_orig_ps_set_shader_resources = nullptr;
+        PSSetShaderResources_fn m_orig_vs_set_shader_resources = nullptr;
+        PSSetShaderResources_fn m_orig_cs_set_shader_resources = nullptr;
 
         // --- Uploads: a texture created empty and filled afterwards, when TrackMapUnmap is on ---
 

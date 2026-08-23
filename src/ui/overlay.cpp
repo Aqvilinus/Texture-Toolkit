@@ -314,7 +314,7 @@ namespace TextureToolkit
             const size_t refreshed = tm.rescan_injected();
             SetStatusMessage("Rescanned TT/inject; refreshed " + std::to_string(refreshed) + " texture(s) in place.");
         }
-        ImGui::SetItemTooltip("Copy edited DDS files into the textures the game already holds. A changed size or format needs a restart.");
+        ImGui::SetItemTooltip("Rescan TT/inject and apply what changed, including files added since the game started.");
         ImGui::SameLine();
         if (ImGui::Button("Dump all"))
         {

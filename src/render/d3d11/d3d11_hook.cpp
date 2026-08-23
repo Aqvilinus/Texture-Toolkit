@@ -133,11 +133,16 @@ namespace TextureToolkit
 
         void **ctx_vtable = *reinterpret_cast<void ***>(context);
 
-        // What the panel calls "on screen" is this call and nothing else. Binding a view does
-        // not touch the texture's reference count, so it is the only place the game says which
-        // texture it is about to draw with.
+        // Binding a view is where the game says which texture it is about to draw with; it does
+        // not touch the texture's reference count, so there is nowhere else to learn it. The pixel
+        // stage is where art is sampled, and the other two are here so a texture used only by a
+        // vertex or compute shader still shows up.
         HookManager::get().create_hook(ctx_vtable[8], &Hooked_PSSetShaderResources,
                                        reinterpret_cast<void **>(&m_orig_ps_set_shader_resources));
+        HookManager::get().create_hook(ctx_vtable[25], &Hooked_VSSetShaderResources,
+                                       reinterpret_cast<void **>(&m_orig_vs_set_shader_resources));
+        HookManager::get().create_hook(ctx_vtable[67], &Hooked_CSSetShaderResources,
+                                       reinterpret_cast<void **>(&m_orig_cs_set_shader_resources));
 
         void *map_addr = ctx_vtable[14]; // Map is index 14
         void *unmap_addr = ctx_vtable[15]; // Unmap is index 15
@@ -353,8 +358,10 @@ namespace TextureToolkit
         return hr;
     }
 
-    void STDMETHODCALLTYPE D3D11Hook::Hooked_PSSetShaderResources(ID3D11DeviceContext *context, UINT StartSlot,
-                                                                 UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews)
+    // Shared by all three stage hooks below: note what is on screen, and hand over a replacement
+    // where one has been built for a texture the game already created.
+    void D3D11Hook::bind_shader_resources(PSSetShaderResources_fn original, ID3D11DeviceContext *context, UINT StartSlot,
+                                          UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews)
     {
         ID3D11ShaderResourceView *patched[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT];
         bool substituted = false;
@@ -388,8 +395,22 @@ namespace TextureToolkit
             }
         }
 
-        get().m_orig_ps_set_shader_resources(context, StartSlot, NumViews,
-                                             substituted ? patched : ppShaderResourceViews);
+        original(context, StartSlot, NumViews, substituted ? patched : ppShaderResourceViews);
+    }
+
+    void STDMETHODCALLTYPE D3D11Hook::Hooked_PSSetShaderResources(ID3D11DeviceContext *context, UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews)
+    {
+        bind_shader_resources(get().m_orig_ps_set_shader_resources, context, StartSlot, NumViews, ppShaderResourceViews);
+    }
+
+    void STDMETHODCALLTYPE D3D11Hook::Hooked_VSSetShaderResources(ID3D11DeviceContext *context, UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews)
+    {
+        bind_shader_resources(get().m_orig_vs_set_shader_resources, context, StartSlot, NumViews, ppShaderResourceViews);
+    }
+
+    void STDMETHODCALLTYPE D3D11Hook::Hooked_CSSetShaderResources(ID3D11DeviceContext *context, UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews)
+    {
+        bind_shader_resources(get().m_orig_cs_set_shader_resources, context, StartSlot, NumViews, ppShaderResourceViews);
     }
 
     // --- Uploads: a texture created empty and filled afterwards ---
@@ -463,6 +484,12 @@ namespace TextureToolkit
                         s_logged_unmaps++;
                         Logger::get().debug("[D3D11Hook] Hooked_Unmap: Registering texture=0x" + Logger::fmt("%p", (pResource)));
                     }
+
+                    // Whatever we were showing in this texture's place described content the game
+                    // has just overwritten, so it goes; re-registering below decides the new one.
+                    D3D11TextureManager &tm = D3D11TextureManager::get();
+                    if (const uint32_t previous = tm.resource_hash(pResource))
+                        tm.drop_override(previous);
 
                     ID3D11Device *device = nullptr;
                     context->GetDevice(&device);

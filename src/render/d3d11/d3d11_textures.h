@@ -26,6 +26,10 @@ namespace TextureToolkit
         void pin_preview_view(ID3D11ShaderResourceView *view);
         void note_dump_candidate(ID3D11ShaderResourceView *view, uint32_t hash);
         void register_owned_view(void *view, uint32_t hash);
+
+        // The game has rewritten this texture, so whatever we were showing in its place describes
+        // content that is gone. Called from the unmap hook.
+        void drop_override(uint32_t hash);
         bool owns_resource(ID3D11Resource *resource) const;
         uint32_t resource_hash(ID3D11Resource *resource) const;   // 0 when the resource is not ours
         size_t refresh_injected_contents();
