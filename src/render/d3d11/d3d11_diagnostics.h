@@ -6,6 +6,7 @@
 #include "core/config.h"
 #include "core/logger.h"
 #include "texture/texture_manager.h"
+#include "render/d3d11/d3d11_textures.h"
 
 #include <atomic>
 #include <windows.h>
@@ -85,16 +86,19 @@ namespace TextureToolkit
             return;
         s_last = now;
 
-        TextureManager &tm = TextureManager::get();
+        D3D11TextureManager &tm = D3D11TextureManager::get();
         const uint64_t maps = s_stat_map_records.exchange(0, std::memory_order_relaxed);
 
+        // Every field here must have an argument behind it: the counters this line used to print
+        // were removed and their placeholders left, so it spent a while reading past the end of
+        // the argument list and printing whatever was there.
         Logger::get().info(Logger::fmt(
-            "[D3D11Hook] [perf] %.1f fps (%llu frames / %.1fs) | per frame: %llu SRV binds, %llu replaced, %llu maps"
-            " | resolves: %llu | ms/frame: present %.2f, overlay %.2f, map %.2f,"
-            " hash %.2f (%.0f MB this window)",
+            "[D3D11Hook] [perf] %.1f fps (%llu frames / %.1fs) | per frame: %llu maps, %llu builds"
+            " | ms/frame: present %.3f, overlay %.3f, map %.3f, hash %.3f (%.0f MB this window)",
             secs > 0.0 ? static_cast<double>(s_frames) / secs : 0.0,
             static_cast<unsigned long long>(s_frames), secs,
             static_cast<unsigned long long>(maps / s_frames),
+            static_cast<unsigned long long>(tm.stat_builds.exchange(0, std::memory_order_relaxed)),
             ticks_ms(s_t_present.exchange(0, std::memory_order_relaxed), s_freq, s_frames),
             ticks_ms(s_t_overlay.exchange(0, std::memory_order_relaxed), s_freq, s_frames),
             ticks_ms(s_t_mapunmap.exchange(0, std::memory_order_relaxed), s_freq, s_frames),
