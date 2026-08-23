@@ -47,5 +47,8 @@ namespace TextureToolkit
             Microsoft::WRL::ComPtr<IDirect3DBaseTexture9> file_preview;
         };
         D3D9State m_d3d9;
+
+        // Said once per format, not once per texture. m_mutex held.
+        std::unordered_set<uint32_t> m_unmeasurable_formats;
     };
 }

@@ -65,9 +65,20 @@ namespace TextureToolkit
         if (filter_small_textures && (width < 16 || height < 16))
             return 0;
 
-        uint32_t hash = hash_pixels(pixel_data, width, height, format, pitch);
+        const uint32_t hash = hash_pixels(pixel_data, width, height, format, pitch);
         if (hash == 0)
+        {
+            // Reported from here rather than from the measuring code, which runs inside the game's
+            // unlock hook before any lock of ours is held. Under m_mutex below it would be a
+            // container written from two threads at once on a game that uploads from a worker.
+            std::lock_guard<std::mutex> lock(m_mutex);
+            if (m_unmeasurable_formats.insert(static_cast<uint32_t>(format)).second)
+            {
+                Logger::get().warn("[D3D9Textures] Not tracking textures in " + format_name(format) +
+                                   ": no known pixel size, and guessing one would read past the lock.");
+            }
             return 0;
+        }
 
         UINT original_levels = texture->GetLevelCount();
 
@@ -78,8 +89,7 @@ namespace TextureToolkit
         // immune to driver pointer reuse.
         texture->SetPrivateData(TT_HASH_GUID, &hash, sizeof(hash), 0);
 
-        bool dx9_compressed = (format == D3DFMT_DXT1 || format == D3DFMT_DXT2 || format == D3DFMT_DXT3 ||
-                               format == D3DFMT_DXT4 || format == D3DFMT_DXT5);
+        const bool dx9_compressed = is_block_compressed(format);
 
         TextureDetails details;
         details.hash = hash;
@@ -111,7 +121,8 @@ namespace TextureToolkit
         }
 
         track(hash, details);
-        Logger::get().debug("[D3D9Textures] Tracked D3D9 texture: 0x" + details.hash_hex + " (" + std::to_string(width) + "x" + std::to_string(height) + ")");
+        if (Logger::get().debug_enabled())
+            Logger::get().debug("[D3D9Textures] Tracked D3D9 texture: 0x" + details.hash_hex + " (" + std::to_string(width) + "x" + std::to_string(height) + ")");
 
         if (auto_dump && auto_dump_here)
         {
@@ -193,9 +204,12 @@ namespace TextureToolkit
             return nullptr;
 
         const std::streamsize size = file.tellg();
+        if (size <= 0)
+            return nullptr;
+
         file.seekg(0);
         std::vector<uint8_t> bytes(static_cast<size_t>(size));
-        if (size <= 0 || !file.read(reinterpret_cast<char *>(bytes.data()), size))
+        if (!file.read(reinterpret_cast<char *>(bytes.data()), size))
             return nullptr;
 
         constexpr UINT kDefault = static_cast<UINT>(-1);   // D3DX_DEFAULT: let it choose
@@ -536,6 +550,7 @@ namespace TextureToolkit
                                 dst->UnlockRect();
                                 dst->Release();
                                 src->Release();
+                                tex->Release();
                                 return {};
                             }
                             path = write_dump_dds(hash, sd.Width, sd.Height, dxgi, {copy_level(dxgi, sd.Height, lr2.pBits, lr2.Pitch)});

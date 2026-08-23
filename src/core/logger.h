@@ -37,6 +37,11 @@ namespace TextureToolkit
         // thousands of lines/sec). Set to Debug via the INI "Verbose" toggle.
         void set_min_level(LogLevel level) { m_min_level = level; }
 
+        // Asked before a debug message is built: debug() takes a finished string, so a line the
+        // level will drop still costs its concatenations -- and the ones on the texture paths are
+        // built inside the game's own upload call.
+        bool debug_enabled() const { return m_min_level.load(std::memory_order_relaxed) <= LogLevel::Debug; }
+
         void debug(const std::string &msg) { log(LogLevel::Debug, msg); }
         void info(const std::string &msg) { log(LogLevel::Info, msg); }
         void warn(const std::string &msg) { log(LogLevel::Warning, msg); }

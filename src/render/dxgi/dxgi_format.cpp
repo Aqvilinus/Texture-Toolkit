@@ -41,7 +41,11 @@ namespace TextureToolkit
     bool load_dds(const std::filesystem::path &path, bool generate_chain,
                   DirectX::ScratchImage &image, DirectX::TexMetadata &meta)
     {
-        if (FAILED(DirectX::LoadFromDDSFile(path.wstring().c_str(), DirectX::DDS_FLAGS_NONE, &meta, image)))
+        // Permissive because this reads what a user gives us: old exporters and image-editor plugins
+        // write DDS files with a short header, a short pixel format or a wrong mip count, and there
+        // is no reason to refuse a file the library can read anyway. It cannot affect a dump, which
+        // is written, not read.
+        if (FAILED(DirectX::LoadFromDDSFile(path.wstring().c_str(), DirectX::DDS_FLAGS_PERMISSIVE, &meta, image)))
             return false;
 
         // Only the first slice of the first item is read below. Saying so out loud beats silently
@@ -55,7 +59,12 @@ namespace TextureToolkit
         if (generate_chain && meta.mipLevels == 1)
         {
             DirectX::ScratchImage mipped;
-            if (SUCCEEDED(DirectX::GenerateMipMaps(*image.GetImage(0, 0, 0), DirectX::TEX_FILTER_DEFAULT, 0, mipped)))
+            // A box filter, and not through WIC: the default routes to whatever scaler the user's
+            // Windows ships, so the same replacement file would generate different mips on two
+            // machines.
+            if (SUCCEEDED(DirectX::GenerateMipMaps(*image.GetImage(0, 0, 0),
+                                                     DirectX::TEX_FILTER_BOX | DirectX::TEX_FILTER_FORCE_NON_WIC,
+                                                     0, mipped)))
             {
                 image = std::move(mipped);
                 meta = image.GetMetadata();

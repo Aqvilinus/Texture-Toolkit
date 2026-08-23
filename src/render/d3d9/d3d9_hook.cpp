@@ -280,7 +280,8 @@ namespace TextureToolkit
         if (s_inside_injection)
             return get().m_orig_create_texture(device, Width, Height, Levels, Usage, Format, Pool, ppTexture, pSharedHandle);
 
-        Logger::get().debug("[D3D9Hook] Hooked_CreateTexture called: Width=" + std::to_string(Width) + ", Height=" + std::to_string(Height) + ", Format=" + std::to_string(static_cast<uint32_t>(Format)));
+        if (Logger::get().debug_enabled())
+            Logger::get().debug("[D3D9Hook] Hooked_CreateTexture called: Width=" + std::to_string(Width) + ", Height=" + std::to_string(Height) + ", Format=" + std::to_string(static_cast<uint32_t>(Format)));
         HRESULT hr = get().m_orig_create_texture(device, Width, Height, Levels, Usage, Format, Pool, ppTexture, pSharedHandle);
 
         if (SUCCEEDED(hr) && ppTexture != nullptr && *ppTexture != nullptr)
@@ -416,7 +417,8 @@ namespace TextureToolkit
         if (s_logged_set_texture_calls < 20 && pTexture != nullptr)
         {
             s_logged_set_texture_calls++;
-            Logger::get().debug("[D3D9Hook] Hooked_SetTexture: Stage=" + std::to_string(Stage) + " pTexture=0x" + Logger::fmt("%p", (pTexture)));
+            if (Logger::get().debug_enabled())
+                Logger::get().debug("[D3D9Hook] Hooked_SetTexture: Stage=" + std::to_string(Stage) + " pTexture=0x" + Logger::fmt("%p", (pTexture)));
         }
 
         IDirect3DBaseTexture9 *pReplacement = D3D9TextureManager::get().get_replacement_texture9(pTexture);

@@ -13,4 +13,8 @@ namespace TextureToolkit
 
     // D3D9 surfaces are hashed from the locked rectangle, so the pitch is the runtime's, not ours.
     uint32_t hash_pixels(const void *pixel_data, UINT width, UINT height, D3DFORMAT format, UINT pitch);
+
+    // From the same table the hash measures blocks with, so the panel cannot disagree with it about
+    // what is compressed -- BC4 and BC5 arrive as FourCC codes and were being missed.
+    bool is_block_compressed(D3DFORMAT format);
 }

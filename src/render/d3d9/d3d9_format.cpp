@@ -129,6 +129,11 @@ namespace TextureToolkit
         }
     }
 
+    bool is_block_compressed(D3DFORMAT format)
+    {
+        return block_bytes(format) != 0;
+    }
+
     uint32_t hash_pixels(const void *pixel_data, UINT width, UINT height, D3DFORMAT format, UINT pitch)
     {
         if (pixel_data == nullptr || width == 0 || height == 0)
@@ -149,10 +154,7 @@ namespace TextureToolkit
         else
         {
             // Guessing a size here is a read past the end of the locked rectangle. A texture in a
-            // format we cannot measure is left untracked instead.
-            static std::unordered_set<DWORD> s_reported;
-            if (s_reported.insert(static_cast<DWORD>(format)).second)
-                Logger::get().warn("[D3D9Format] Not tracking textures in " + format_name(format) + ": unknown pixel size.");
+            // format we cannot measure is left untracked instead; the caller says so, once.
             return 0;
         }
 

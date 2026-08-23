@@ -7,6 +7,7 @@
 #include "core/scoped_flag.h"
 
 #include <DirectXTex.h>
+#include <cassert>
 #include <algorithm>
 
 namespace TextureToolkit
@@ -40,6 +41,11 @@ namespace TextureToolkit
 
     size_t D3D11TextureManager::probe_slot(const D3D11State::OwnedSet &owned, void *key)
     {
+        // The walk below ends only because a free slot always exists: insert_owned_locked grows the
+        // table while it is half full. If that ever stops being true this spins inside the render
+        // thread, so it is worth saying out loud in a debug build.
+        assert(owned.count <= owned.mask);
+
         size_t i = (reinterpret_cast<uintptr_t>(key) >> 4) & owned.mask;
         while (true)
         {
@@ -290,7 +296,7 @@ namespace TextureToolkit
 
         DirectX::ScratchImage image;
         DirectX::TexMetadata meta = {};
-        if (FAILED(DirectX::LoadFromDDSFile(inject_path.wstring().c_str(), DirectX::DDS_FLAGS_NONE, &meta, image)))
+        if (FAILED(DirectX::LoadFromDDSFile(inject_path.wstring().c_str(), DirectX::DDS_FLAGS_PERMISSIVE, &meta, image)))
         {
             std::lock_guard<std::mutex> lock(m_mutex);
             m_failed_injections.insert(hash);
@@ -300,7 +306,9 @@ namespace TextureToolkit
         if (desc.MipLevels != 1 && meta.mipLevels == 1)
         {
             DirectX::ScratchImage mipped;
-            if (SUCCEEDED(DirectX::GenerateMipMaps(*image.GetImage(0, 0, 0), DirectX::TEX_FILTER_DEFAULT, 0, mipped)))
+            if (SUCCEEDED(DirectX::GenerateMipMaps(*image.GetImage(0, 0, 0),
+                                                     DirectX::TEX_FILTER_BOX | DirectX::TEX_FILTER_FORCE_NON_WIC,
+                                                     0, mipped)))
             {
                 image = std::move(mipped);
                 meta = image.GetMetadata();
@@ -509,31 +517,27 @@ namespace TextureToolkit
             return;
         }
 
-        Microsoft::WRL::ComPtr<ID3D11Resource> resource;
+        // The game's own view format decides sRGB, not the file: it picked how to sample this
+        // texture and the replacement is standing in for it.
+        bool as_srgb = false;
+        if (auto it = m_tracked_textures.find(hash); it != m_tracked_textures.end() && it->second.view_format_id != 0)
+            as_srgb = DirectX::IsSRGB(static_cast<DXGI_FORMAT>(it->second.view_format_id));
+
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> view;
         {
             ScopedFlag injecting(D3D11Hook::s_inside_injection);
 
-            if (FAILED(DirectX::CreateTexture(device, image.GetImages(), image.GetImageCount(), meta, &resource)) ||
-                resource == nullptr)
-            {
-                m_failed_injections.insert(hash);
-                return;
-            }
+            // CREATETEX_FORCE_SRGB rather than an sRGB view over a linear resource: D3D11 only
+            // allows the two to differ when the resource is typeless, so building the view by hand
+            // failed outright on every sRGB texture -- and blacklisted the file for the session.
+            // This applies the format to both, and picks the view dimension from the metadata.
+            const DirectX::CREATETEX_FLAGS flags =
+                as_srgb ? DirectX::CREATETEX_FORCE_SRGB : DirectX::CREATETEX_DEFAULT;
 
-            // The game's own view format decides sRGB, not the file: it picked how to sample this
-            // texture and the replacement is standing in for it.
-            D3D11_SHADER_RESOURCE_VIEW_DESC vd = {};
-            vd.Format = meta.format;
-            if (auto it = m_tracked_textures.find(hash); it != m_tracked_textures.end() && it->second.view_format_id != 0)
-            {
-                const DXGI_FORMAT wanted = static_cast<DXGI_FORMAT>(it->second.view_format_id);
-                vd.Format = DirectX::IsSRGB(wanted) ? DirectX::MakeSRGB(meta.format) : meta.format;
-            }
-            vd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-            vd.Texture2D.MipLevels = static_cast<UINT>(-1);
-
-            if (FAILED(device->CreateShaderResourceView(resource.Get(), &vd, &view)) || view == nullptr)
+            if (FAILED(DirectX::CreateShaderResourceViewEx(device, image.GetImages(), image.GetImageCount(), meta,
+                                                           D3D11_USAGE_DEFAULT, D3D11_BIND_SHADER_RESOURCE,
+                                                           0, 0, flags, &view)) ||
+                view == nullptr)
             {
                 m_failed_injections.insert(hash);
                 return;
@@ -589,7 +593,7 @@ namespace TextureToolkit
 
             DirectX::ScratchImage image;
             DirectX::TexMetadata meta = {};
-            if (FAILED(DirectX::LoadFromDDSFile(path.wstring().c_str(), DirectX::DDS_FLAGS_NONE, &meta, image)))
+            if (FAILED(DirectX::LoadFromDDSFile(path.wstring().c_str(), DirectX::DDS_FLAGS_PERMISSIVE, &meta, image)))
                 continue;
 
             D3D11_TEXTURE2D_DESC desc = {};
@@ -598,7 +602,9 @@ namespace TextureToolkit
             if (desc.MipLevels != 1 && meta.mipLevels == 1)
             {
                 DirectX::ScratchImage mipped;
-                if (SUCCEEDED(DirectX::GenerateMipMaps(*image.GetImage(0, 0, 0), DirectX::TEX_FILTER_DEFAULT, 0, mipped)))
+                if (SUCCEEDED(DirectX::GenerateMipMaps(*image.GetImage(0, 0, 0),
+                                                     DirectX::TEX_FILTER_BOX | DirectX::TEX_FILTER_FORCE_NON_WIC,
+                                                     0, mipped)))
                 {
                     image = std::move(mipped);
                     meta = image.GetMetadata();

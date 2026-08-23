@@ -46,6 +46,11 @@ endif()
 set(BUILD_TOOLS OFF CACHE BOOL "" FORCE)
 set(BUILD_SAMPLE OFF CACHE BOOL "" FORCE)
 set(BUILD_DX12 OFF CACHE BOOL "" FORCE)
+
+# Their default is ON, and it lands on our own compile flags as well as theirs. Nothing here calls
+# the block compressor, so today it changes nothing -- but the first call to Compress would make the
+# .asi depend on VCOMP140.DLL, which is exactly what linking the static CRT is meant to avoid.
+set(BC_USE_OPENMP OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(directxtex)
 
 set(IMGUI_SOURCES
