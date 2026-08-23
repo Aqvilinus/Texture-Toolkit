@@ -8,10 +8,11 @@
 
 namespace TextureToolkit
 {
-    // The D3D11 side: a device, its context, and the textures they create. Replacement happens at
-    // creation, the one moment a texture's pixels are known and nothing has drawn with it yet.
-    // Presentation is not here -- that is shared with D3D10 and 12 and lives in DXGIHook, which
-    // calls render_imgui once a frame.
+    // The D3D11 side: a device, its context, and the textures they create. A texture that arrives
+    // with its pixels is replaced where it is created, before anything has drawn with it; anything
+    // else is replaced where it is bound, by handing the game a view of our own. Presentation is
+    // not here -- that is shared with D3D10 and 12 and lives in DXGIHook, which calls render_imgui
+    // once a frame.
     class D3D11Hook
     {
     public:
@@ -64,29 +65,35 @@ namespace TextureToolkit
         D3D11CreateDevice_fn m_orig_create_device = nullptr;
         D3D11CreateDeviceAndSwapChain_fn m_orig_create_device_and_swapchain = nullptr;
 
-        // --- Textures: the pixels arrive with the creation call, so replacement happens there ---
+        // --- Textures: created, and the views the game builds onto them ---
 
         using CreateTexture2D_fn = HRESULT(STDMETHODCALLTYPE *)(ID3D11Device *, const D3D11_TEXTURE2D_DESC *, const D3D11_SUBRESOURCE_DATA *, ID3D11Texture2D **);
         using CreateShaderResourceView_fn = HRESULT(STDMETHODCALLTYPE *)(ID3D11Device *, ID3D11Resource *, const D3D11_SHADER_RESOURCE_VIEW_DESC *, ID3D11ShaderResourceView **);
-        using PSSetShaderResources_fn = void(STDMETHODCALLTYPE *)(ID3D11DeviceContext *, UINT, UINT, ID3D11ShaderResourceView *const *);
 
         static HRESULT STDMETHODCALLTYPE Hooked_CreateTexture2D(ID3D11Device *device, const D3D11_TEXTURE2D_DESC *pDesc, const D3D11_SUBRESOURCE_DATA *pInitialData, ID3D11Texture2D **ppTexture2D);
         static HRESULT STDMETHODCALLTYPE Hooked_CreateShaderResourceView(ID3D11Device *device, ID3D11Resource *pResource, const D3D11_SHADER_RESOURCE_VIEW_DESC *pDesc, ID3D11ShaderResourceView **ppSRView);
-        static void STDMETHODCALLTYPE Hooked_PSSetShaderResources(ID3D11DeviceContext *context, UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews);
-
-        // A texture sampled only in a vertex or compute shader is never bound to the pixel stage,
-        // so without these it never appears on screen as far as the panel is concerned. The other
-        // stages are not watched: art does not arrive through them.
-        static void STDMETHODCALLTYPE Hooked_VSSetShaderResources(ID3D11DeviceContext *context, UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews);
-        static void STDMETHODCALLTYPE Hooked_CSSetShaderResources(ID3D11DeviceContext *context, UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews);
-
-        static void bind_shader_resources(PSSetShaderResources_fn original, ID3D11DeviceContext *context, UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews);
 
         CreateTexture2D_fn m_orig_create_texture2d = nullptr;
         CreateShaderResourceView_fn m_orig_create_shader_resource_view = nullptr;
-        PSSetShaderResources_fn m_orig_ps_set_shader_resources = nullptr;
-        PSSetShaderResources_fn m_orig_vs_set_shader_resources = nullptr;
-        PSSetShaderResources_fn m_orig_cs_set_shader_resources = nullptr;
+
+        // --- Binding: what is on screen, and what stands in for it ---
+        //
+        // The three stages share one signature and one body. A texture sampled only in a vertex or
+        // compute shader is never bound to the pixel stage, so without those two it would not
+        // appear on screen at all as far as the panel is concerned. The remaining stages are left
+        // alone: art does not arrive through them.
+
+        using SetShaderResources_fn = void(STDMETHODCALLTYPE *)(ID3D11DeviceContext *, UINT, UINT, ID3D11ShaderResourceView *const *);
+
+        static void STDMETHODCALLTYPE Hooked_PSSetShaderResources(ID3D11DeviceContext *context, UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews);
+        static void STDMETHODCALLTYPE Hooked_VSSetShaderResources(ID3D11DeviceContext *context, UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews);
+        static void STDMETHODCALLTYPE Hooked_CSSetShaderResources(ID3D11DeviceContext *context, UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews);
+
+        static void bind_shader_resources(SetShaderResources_fn original, ID3D11DeviceContext *context, UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews);
+
+        SetShaderResources_fn m_orig_ps_set_shader_resources = nullptr;
+        SetShaderResources_fn m_orig_vs_set_shader_resources = nullptr;
+        SetShaderResources_fn m_orig_cs_set_shader_resources = nullptr;
 
         // --- Uploads: a texture created empty and filled afterwards, when TrackMapUnmap is on ---
 

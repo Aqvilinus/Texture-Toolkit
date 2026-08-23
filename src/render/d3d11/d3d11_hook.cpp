@@ -4,7 +4,7 @@
 #include "render/d3d11/d3d11_diagnostics.h"
 #include "core/hook_manager.h"
 #include "core/iat_hook.h"
-#include "render/d3d11/d3d11_textures.h"
+#include "render/d3d11/d3d11_texture_manager.h"
 #include "render/dxgi/dxgi_format.h"
 #include "ui/overlay.h"
 #include "core/config.h"
@@ -228,7 +228,7 @@ namespace TextureToolkit
                    : E_FAIL;
     }
 
-    // --- Textures: the pixels arrive with the creation call, so replacement happens there ---
+    // --- Textures: created, and the views the game builds onto them ---
 
     namespace
     {
@@ -360,7 +360,7 @@ namespace TextureToolkit
 
     // Shared by all three stage hooks below: note what is on screen, and hand over a replacement
     // where one has been built for a texture the game already created.
-    void D3D11Hook::bind_shader_resources(PSSetShaderResources_fn original, ID3D11DeviceContext *context, UINT StartSlot,
+    void D3D11Hook::bind_shader_resources(SetShaderResources_fn original, ID3D11DeviceContext *context, UINT StartSlot,
                                           UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews)
     {
         ID3D11ShaderResourceView *patched[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT];
