@@ -57,7 +57,7 @@ namespace TextureToolkit
         }
     }
 
-    void D3D9TextureManager::register_texture9(IDirect3DDevice9 *device, IDirect3DTexture9 *texture, const void *pixel_data, UINT width, UINT height, D3DFORMAT format, UINT pitch)
+    void D3D9TextureManager::register_texture9(IDirect3DDevice9 *device, IDirect3DTexture9 *texture, const void *pixel_data, UINT width, UINT height, D3DFORMAT format, UINT pitch, bool defer_dump)
     {
         if (device == nullptr || texture == nullptr || pixel_data == nullptr || width == 0 || height == 0)
             return;
@@ -113,13 +113,69 @@ namespace TextureToolkit
         track(hash, details);
         Logger::get().debug("[D3D9Textures] Tracked D3D9 texture: 0x" + details.hash_hex + " (" + std::to_string(width) + "x" + std::to_string(height) + ")");
 
-        if (auto_dump)
+        if (auto_dump && !defer_dump)
         {
             DXGI_FORMAT dxgi_fmt = to_dxgi(format);
             if (dxgi_fmt != DXGI_FORMAT_UNKNOWN)
             {
                 dump_texture(hash, width, height, dxgi_fmt, {copy_level(dxgi_fmt, height, pixel_data, pitch)});
             }
+        }
+    }
+
+    static bool save_via_d3dx(IDirect3DBaseTexture9 *texture, const std::filesystem::path &path);
+
+    void D3D9TextureManager::register_from_d3dx(IDirect3DDevice9 *device, IDirect3DTexture9 *texture)
+    {
+        if (device == nullptr || texture == nullptr)
+            return;
+
+        D3DSURFACE_DESC desc = {};
+        if (FAILED(texture->GetLevelDesc(0, &desc)))
+            return;
+
+        uint32_t hash = 0;
+        {
+            // Our own lock, so the lock hook must not read it back as a game upload.
+            ScopedFlag injecting(D3D9Hook::s_inside_injection);
+
+            D3DLOCKED_RECT rect = {};
+            if (FAILED(texture->LockRect(0, &rect, nullptr, D3DLOCK_READONLY)))
+                return;
+
+            if (rect.pBits != nullptr && rect.Pitch > 0)
+            {
+                // The dump is deferred: D3DX can write the whole chain from the texture itself,
+                // which is the point of watching this entry at all.
+                register_texture9(device, texture, rect.pBits, desc.Width, desc.Height, desc.Format,
+                                  static_cast<UINT>(rect.Pitch), /*defer_dump=*/true);
+            }
+            texture->UnlockRect(0);
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            DWORD size = sizeof(hash);
+            if (FAILED(texture->GetPrivateData(TT_HASH_GUID, &hash, &size)) || size != sizeof(hash) || hash == 0)
+                return;
+
+            if (!auto_dump || m_tracked_textures.find(hash) == m_tracked_textures.end())
+                return;
+        }
+
+        std::error_code ec;
+        std::filesystem::create_directories(get_dump_dir(), ec);
+        const std::filesystem::path dds_path = get_dump_dir() / (format_hash_hex(hash) + ".dds");
+        if (!save_via_d3dx(texture, dds_path))
+            return;
+
+        std::lock_guard<std::mutex> lock(m_mutex);
+        auto it = m_tracked_textures.find(hash);
+        if (it != m_tracked_textures.end())
+        {
+            it->second.filepath_dumped = dds_path.string();
+            if (it->second.status != TextureStatus::INJECTED)
+                it->second.status = TextureStatus::DUMPED;
         }
     }
 
@@ -162,6 +218,61 @@ namespace TextureToolkit
                                   kDefault, kDefault, kDefault, 0, D3DFMT_UNKNOWN, D3DPOOL_MANAGED,
                                   kDefault, kDefault, 0, nullptr, nullptr, &texture);
         return SUCCEEDED(hr) ? texture : nullptr;
+    }
+
+    // Special K dumps by handing D3DX the texture object rather than a buffer of pixels, which
+    // writes every level it has -- and every format, including the ones with no DXGI equivalent
+    // that our own writer has to refuse. Resolved the same way as the loader above: never loaded
+    // by us, only borrowed from a game that already has it.
+    static bool save_via_d3dx(IDirect3DBaseTexture9 *texture, const std::filesystem::path &path)
+    {
+        using SaveTextureToFileW_fn = HRESULT(WINAPI *)(LPCWSTR, DWORD, IDirect3DBaseTexture9 *, const PALETTEENTRY *);
+        static SaveTextureToFileW_fn save = []() -> SaveTextureToFileW_fn {
+            HMODULE module = GetModuleHandleW(L"d3dx9_43.dll");
+            return module ? reinterpret_cast<SaveTextureToFileW_fn>(
+                                GetProcAddress(module, "D3DXSaveTextureToFileW"))
+                          : nullptr;
+        }();
+
+        if (save == nullptr || texture == nullptr)
+            return false;
+
+        constexpr DWORD kDDS = 4;   // D3DXIFF_DDS
+
+        ScopedFlag injecting(D3D9Hook::s_inside_injection);
+        return SUCCEEDED(save(path.wstring().c_str(), kDDS, texture, nullptr));
+    }
+
+    // A render target cannot be read by D3DX where it lives, so it is copied level by level into a
+    // texture that can be, exactly as Special K does.
+    static IDirect3DTexture9 *copy_render_target(IDirect3DTexture9 *texture, const D3DSURFACE_DESC &desc)
+    {
+        IDirect3DDevice9 *device = D3D9Hook::get().get_device();
+        if (device == nullptr)
+            return nullptr;
+
+        ScopedFlag injecting(D3D9Hook::s_inside_injection);
+
+        IDirect3DTexture9 *copy = nullptr;
+        if (FAILED(device->CreateTexture(desc.Width, desc.Height, texture->GetLevelCount(),
+                                         D3DUSAGE_DYNAMIC, desc.Format, D3DPOOL_DEFAULT, &copy, nullptr)) ||
+            copy == nullptr)
+            return nullptr;
+
+        for (DWORD level = 0; level < texture->GetLevelCount(); ++level)
+        {
+            IDirect3DSurface9 *from = nullptr;
+            IDirect3DSurface9 *to = nullptr;
+            if (SUCCEEDED(texture->GetSurfaceLevel(level, &from)) &&
+                SUCCEEDED(copy->GetSurfaceLevel(level, &to)))
+            {
+                device->GetRenderTargetData(from, to);
+            }
+            if (from != nullptr) from->Release();
+            if (to != nullptr) to->Release();
+        }
+
+        return copy;
     }
 
     bool D3D9TextureManager::build_replacement9(IDirect3DDevice9 *device, uint32_t hash, const std::filesystem::path &inject_path, UINT original_levels, TextureDetails &details)
@@ -360,6 +471,33 @@ namespace TextureToolkit
         D3DSURFACE_DESC sd = {};
         if (SUCCEEDED(tex->GetLevelDesc(0, &sd)))
         {
+            // D3DX first, the way Special K does it: it writes the whole texture, so every level
+            // and every format survive. Our own writer below is what a game without D3DX gets.
+            {
+                std::error_code ec;
+                std::filesystem::create_directories(get_dump_dir(), ec);
+                const std::filesystem::path dds_path = get_dump_dir() / (format_hash_hex(hash) + ".dds");
+
+                if ((sd.Usage & D3DUSAGE_RENDERTARGET) != 0)
+                {
+                    if (IDirect3DTexture9 *copy = copy_render_target(tex, sd))
+                    {
+                        const bool saved = save_via_d3dx(copy, dds_path);
+                        copy->Release();
+                        if (saved)
+                        {
+                            tex->Release();
+                            return dds_path.string();
+                        }
+                    }
+                }
+                else if (save_via_d3dx(tex, dds_path))
+                {
+                    tex->Release();
+                    return dds_path.string();
+                }
+            }
+
             DXGI_FORMAT dxgi = to_dxgi(sd.Format);
 
             ScopedFlag injecting(D3D9Hook::s_inside_injection);

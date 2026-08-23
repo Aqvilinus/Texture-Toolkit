@@ -12,7 +12,11 @@ namespace TextureToolkit
         static D3D9TextureManager &get();
 
         IDirect3DBaseTexture9 *get_replacement_texture9(IDirect3DBaseTexture9 *orig);
-        void register_texture9(IDirect3DDevice9 *device, IDirect3DTexture9 *texture, const void *pixel_data, UINT width, UINT height, D3DFORMAT format, UINT pitch);
+        void register_texture9(IDirect3DDevice9 *device, IDirect3DTexture9 *texture, const void *pixel_data, UINT width, UINT height, D3DFORMAT format, UINT pitch, bool defer_dump = false);
+
+        // A texture D3DX built from a file, which arrives complete: every mip level at once, unlike
+        // the lock path where the game delivers one level at a time and never says when it is done.
+        void register_from_d3dx(IDirect3DDevice9 *device, IDirect3DTexture9 *texture);
         void copy_tag9(IDirect3DBaseTexture9 *src, IDirect3DBaseTexture9 *dst);
         bool build_replacement9(IDirect3DDevice9 *device, uint32_t hash, const std::filesystem::path &inject_path, UINT original_levels, TextureDetails &details);
         std::string dump_base_texture9(uint32_t hash, IDirect3DBaseTexture9 *base);

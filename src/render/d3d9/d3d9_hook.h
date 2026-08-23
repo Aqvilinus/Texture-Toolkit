@@ -103,6 +103,30 @@ namespace TextureToolkit
         SetTexture_fn m_orig_set_texture = nullptr;
         UpdateTexture_fn m_orig_update_texture = nullptr;
 
+        // --- D3DX: the other way a texture arrives, when the game uses the helper library ---
+        //
+        // Hooked in whatever d3dx9_43 the game already loaded, never one we load ourselves, and
+        // only the entry points Special K watches. What it buys is a complete texture: D3DX has
+        // built the whole mip chain by the time it returns, where the lock path below sees one
+        // level per call and never learns when the chain is finished. A game with its own asset
+        // pipeline never calls these, which is why the lock path stays.
+
+        using D3DXCreateTextureFromFileInMemoryEx_fn = HRESULT(WINAPI *)(IDirect3DDevice9 *, LPCVOID, UINT, UINT, UINT, UINT, DWORD, D3DFORMAT, D3DPOOL, DWORD, DWORD, D3DCOLOR, void *, PALETTEENTRY *, IDirect3DTexture9 **);
+        using D3DXCreateTextureFromFileExW_fn = HRESULT(WINAPI *)(IDirect3DDevice9 *, LPCWSTR, UINT, UINT, UINT, DWORD, D3DFORMAT, D3DPOOL, DWORD, DWORD, D3DCOLOR, void *, PALETTEENTRY *, IDirect3DTexture9 **);
+        using D3DXCreateTextureFromFileExA_fn = HRESULT(WINAPI *)(IDirect3DDevice9 *, LPCSTR, UINT, UINT, UINT, DWORD, D3DFORMAT, D3DPOOL, DWORD, DWORD, D3DCOLOR, void *, PALETTEENTRY *, IDirect3DTexture9 **);
+
+        static HRESULT WINAPI Hooked_D3DXCreateTextureFromFileInMemoryEx(IDirect3DDevice9 *device, LPCVOID pSrcData, UINT SrcDataSize, UINT Width, UINT Height, UINT MipLevels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, DWORD Filter, DWORD MipFilter, D3DCOLOR ColorKey, void *pSrcInfo, PALETTEENTRY *pPalette, IDirect3DTexture9 **ppTexture);
+        static HRESULT WINAPI Hooked_D3DXCreateTextureFromFileExW(IDirect3DDevice9 *device, LPCWSTR pSrcFile, UINT Width, UINT Height, UINT MipLevels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, DWORD Filter, DWORD MipFilter, D3DCOLOR ColorKey, void *pSrcInfo, PALETTEENTRY *pPalette, IDirect3DTexture9 **ppTexture);
+        static HRESULT WINAPI Hooked_D3DXCreateTextureFromFileExA(IDirect3DDevice9 *device, LPCSTR pSrcFile, UINT Width, UINT Height, UINT MipLevels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, DWORD Filter, DWORD MipFilter, D3DCOLOR ColorKey, void *pSrcInfo, PALETTEENTRY *pPalette, IDirect3DTexture9 **ppTexture);
+
+        // Installed the first time a device turns up, since a game that uses D3DX has loaded it by
+        // then; nothing happens in a game that has not.
+        void hook_d3dx();
+
+        D3DXCreateTextureFromFileInMemoryEx_fn m_orig_d3dx_from_memory = nullptr;
+        D3DXCreateTextureFromFileExW_fn m_orig_d3dx_from_file_w = nullptr;
+        D3DXCreateTextureFromFileExA_fn m_orig_d3dx_from_file_a = nullptr;
+
         // --- Surfaces: a texture reached through its surface takes this path instead ---
 
         using SurfaceLockRect_fn = HRESULT(STDMETHODCALLTYPE *)(IDirect3DSurface9 *, D3DLOCKED_RECT *, const RECT *, DWORD);

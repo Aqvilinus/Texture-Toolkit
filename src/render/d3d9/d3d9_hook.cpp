@@ -156,6 +156,9 @@ namespace TextureToolkit
         HookManager::get().create_hook(update_tex_addr, &Hooked_UpdateTexture, reinterpret_cast<void **>(&m_orig_update_texture));
         HookManager::get().create_hook(set_tex_addr, &Hooked_SetTexture, reinterpret_cast<void **>(&m_orig_set_texture));
 
+        // A game that loads textures through D3DX has the library in the process by now.
+        hook_d3dx();
+
         // Present never fires for a D3D9Ex device; it presents through this separate slot.
         IDirect3DDevice9Ex *device_ex = nullptr;
         if (SUCCEEDED(device->QueryInterface(__uuidof(IDirect3DDevice9Ex), reinterpret_cast<void **>(&device_ex))) && device_ex != nullptr)
@@ -459,6 +462,79 @@ namespace TextureToolkit
         if (SUCCEEDED(hr) && !s_inside_injection)
             D3D9TextureManager::get().copy_tag9(pSourceTexture, pDestinationTexture);
 
+        return hr;
+    }
+
+    // --- D3DX ---
+
+    void D3D9Hook::hook_d3dx()
+    {
+        if (m_orig_d3dx_from_memory != nullptr)
+            return;
+
+        HMODULE module = GetModuleHandleW(L"d3dx9_43.dll");
+        if (module == nullptr)
+            return;
+
+        struct Entry
+        {
+            const char *name;
+            void *detour;
+            void **original;
+        };
+
+        const Entry entries[] = {
+            { "D3DXCreateTextureFromFileInMemoryEx", &Hooked_D3DXCreateTextureFromFileInMemoryEx, reinterpret_cast<void **>(&m_orig_d3dx_from_memory) },
+            { "D3DXCreateTextureFromFileExW", &Hooked_D3DXCreateTextureFromFileExW, reinterpret_cast<void **>(&m_orig_d3dx_from_file_w) },
+            { "D3DXCreateTextureFromFileExA", &Hooked_D3DXCreateTextureFromFileExA, reinterpret_cast<void **>(&m_orig_d3dx_from_file_a) },
+        };
+
+        size_t installed = 0;
+        for (const Entry &entry : entries)
+        {
+            if (void *address = reinterpret_cast<void *>(GetProcAddress(module, entry.name)))
+            {
+                HookManager::get().create_hook(address, entry.detour, entry.original);
+                ++installed;
+            }
+        }
+
+        if (installed != 0)
+            Logger::get().info("[D3D9Hook] Watching " + std::to_string(installed) + " D3DX texture entry point(s); textures loaded through them arrive with a full mip chain.");
+    }
+
+    namespace
+    {
+        void adopt_d3dx_texture(IDirect3DDevice9 *device, IDirect3DTexture9 **texture)
+        {
+            if (D3D9Hook::s_inside_injection || texture == nullptr || *texture == nullptr)
+                return;
+
+            D3D9TextureManager::get().register_from_d3dx(device, *texture);
+        }
+    }
+
+    HRESULT WINAPI D3D9Hook::Hooked_D3DXCreateTextureFromFileInMemoryEx(IDirect3DDevice9 *device, LPCVOID pSrcData, UINT SrcDataSize, UINT Width, UINT Height, UINT MipLevels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, DWORD Filter, DWORD MipFilter, D3DCOLOR ColorKey, void *pSrcInfo, PALETTEENTRY *pPalette, IDirect3DTexture9 **ppTexture)
+    {
+        const HRESULT hr = get().m_orig_d3dx_from_memory(device, pSrcData, SrcDataSize, Width, Height, MipLevels, Usage, Format, Pool, Filter, MipFilter, ColorKey, pSrcInfo, pPalette, ppTexture);
+        if (SUCCEEDED(hr))
+            adopt_d3dx_texture(device, ppTexture);
+        return hr;
+    }
+
+    HRESULT WINAPI D3D9Hook::Hooked_D3DXCreateTextureFromFileExW(IDirect3DDevice9 *device, LPCWSTR pSrcFile, UINT Width, UINT Height, UINT MipLevels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, DWORD Filter, DWORD MipFilter, D3DCOLOR ColorKey, void *pSrcInfo, PALETTEENTRY *pPalette, IDirect3DTexture9 **ppTexture)
+    {
+        const HRESULT hr = get().m_orig_d3dx_from_file_w(device, pSrcFile, Width, Height, MipLevels, Usage, Format, Pool, Filter, MipFilter, ColorKey, pSrcInfo, pPalette, ppTexture);
+        if (SUCCEEDED(hr))
+            adopt_d3dx_texture(device, ppTexture);
+        return hr;
+    }
+
+    HRESULT WINAPI D3D9Hook::Hooked_D3DXCreateTextureFromFileExA(IDirect3DDevice9 *device, LPCSTR pSrcFile, UINT Width, UINT Height, UINT MipLevels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, DWORD Filter, DWORD MipFilter, D3DCOLOR ColorKey, void *pSrcInfo, PALETTEENTRY *pPalette, IDirect3DTexture9 **ppTexture)
+    {
+        const HRESULT hr = get().m_orig_d3dx_from_file_a(device, pSrcFile, Width, Height, MipLevels, Usage, Format, Pool, Filter, MipFilter, ColorKey, pSrcInfo, pPalette, ppTexture);
+        if (SUCCEEDED(hr))
+            adopt_d3dx_texture(device, ppTexture);
         return hr;
     }
 
