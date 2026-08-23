@@ -25,14 +25,6 @@ A menu that redraws the same art every frame went from single-digit fps to the f
 - It comes off by itself when the game rewrites the texture underneath it, and the new content is
   queued for a replacement of its own.
 
-## What that design gives up
-
-- **Only the pixel, vertex and compute stages are watched.** A texture bound to no other stage than
-  geometry or tessellation never appears at all.
-- **D3D9 auto-dump carries the top mip only.** The game delivers one level per `LockRect` and
-  nothing says when the chain is complete -- unless the game has `d3dx9_43.dll`, in which case the
-  texture comes from D3DX complete and the whole chain is written.
-
 ## Hashing
 
 - CRC-32C, on the CPU's own instruction where available, in place of upstream's table-driven
@@ -49,7 +41,9 @@ A menu that redraws the same art every frame went from single-digit fps to the f
   refused, and dumps go through `D3DXSaveTextureToFileW`, which also writes formats our own writer
   has to decline.
 - None of this happens in a game that does not ship D3DX; those keep the lock-based path, which is
-  what covers engines with their own asset formats.
+  what covers engines with their own asset formats. There, auto-dump writes the top mip only: the
+  game delivers one level per `LockRect` and nothing says when the chain is complete. Dumping from
+  the panel walks the texture on the device and gets every level either way.
 
 ## The panel
 
