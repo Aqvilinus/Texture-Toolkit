@@ -11,6 +11,26 @@
 
 namespace TextureToolkit
 {
+    // The counters exist so the diagnostics report can say what hashing costs inside the game's
+    // own CreateTexture2D. They were declared and read but never written, so that field of the
+    // report was always zero.
+    static uint32_t hash_and_account(TextureManagerBase &manager, const void *pixels, size_t bytes)
+    {
+#if TT_DIAGNOSTICS
+        LARGE_INTEGER start{};
+        QueryPerformanceCounter(&start);
+#endif
+        const uint32_t hash = compute_crc32c(static_cast<const uint8_t *>(pixels), bytes);
+#if TT_DIAGNOSTICS
+        LARGE_INTEGER end{};
+        QueryPerformanceCounter(&end);
+        manager.stat_hash_ticks.fetch_add(static_cast<uint64_t>(end.QuadPart - start.QuadPart), std::memory_order_relaxed);
+        manager.stat_hash_bytes.fetch_add(bytes, std::memory_order_relaxed);
+#else
+        (void)manager;
+#endif
+        return hash;
+    }
     D3D11TextureManager &D3D11TextureManager::get()
     {
         static D3D11TextureManager instance;
@@ -182,7 +202,7 @@ namespace TextureToolkit
         if (slice_pitch == 0)
             return nullptr;
 
-        const uint32_t hash = compute_crc32c(static_cast<const uint8_t *>(initial_data.pSysMem), slice_pitch);
+        const uint32_t hash = hash_and_account(*this, initial_data.pSysMem, slice_pitch);
 
         std::filesystem::path inject_path;
         {
@@ -317,7 +337,7 @@ namespace TextureToolkit
         if (slice_pitch == 0)
             return;
 
-        const uint32_t hash = compute_crc32c(static_cast<const uint8_t *>(pixel_data), slice_pitch);
+        const uint32_t hash = hash_and_account(*this, pixel_data, slice_pitch);
         if (hash == 0)
             return;
 
