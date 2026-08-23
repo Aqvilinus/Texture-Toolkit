@@ -1,6 +1,7 @@
 #pragma once
 
 #include <d3d9.h>
+#include <atomic>
 #include <mutex>
 #include <unordered_map>
 
@@ -32,6 +33,7 @@ namespace TextureToolkit
         void hook_device(IDirect3DDevice9 *device);
 
         IDirect3DDevice9 *get_device() const { return m_device; }
+        uint64_t frames_presented() const { return m_frames.load(std::memory_order_relaxed); }
 
         // Set while we create or lock our own replacement textures, so the hooks below hand those
         // straight through. Thread local: a game uploading on another thread must stay tracked.
@@ -77,6 +79,8 @@ namespace TextureToolkit
         // the swapchain internally, and without that span the inner call counts as a second frame.
         // Thread local, or a game presenting from two threads suppresses its own overlay.
         static thread_local bool s_presenting;
+
+        std::atomic<uint64_t> m_frames{0};
 
         Present_fn m_orig_present = nullptr;
         PresentEx_fn m_orig_present_ex = nullptr;

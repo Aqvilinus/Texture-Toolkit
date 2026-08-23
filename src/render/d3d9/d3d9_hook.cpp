@@ -243,6 +243,7 @@ namespace TextureToolkit
             return;
 
         m_device = device;
+        m_frames.fetch_add(1, std::memory_order_relaxed);
 
         static bool s_logged[3] = {};
         const size_t index = static_cast<size_t>(source);

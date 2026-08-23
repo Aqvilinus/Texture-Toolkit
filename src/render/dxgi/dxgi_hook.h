@@ -29,6 +29,10 @@ namespace TextureToolkit
         // racing the function pointer it is written next to.
         bool present_installed() const { return m_present_installed.load(std::memory_order_acquire); }
 
+        // Frames seen through our detour. Zero with a hook installed means something else owns
+        // Present, which is a different problem from never having hooked it.
+        uint64_t frames_presented() const { return m_frames.load(std::memory_order_relaxed); }
+
     private:
         DXGIHook() = default;
 
@@ -78,5 +82,11 @@ namespace TextureToolkit
 
         std::atomic<bool> m_running{true};
         std::atomic<bool> m_present_installed{false};
+        std::atomic<uint64_t> m_frames{0};
+
+        // Says once, about twenty seconds in, what did and did not happen. Until now a game we
+        // could not hook produced a log that simply stopped, and nothing distinguished "not a
+        // Direct3D 11 game" from "hooked nothing" from "drew nothing".
+        void report_startup_verdict() const;
     };
 }

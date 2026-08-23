@@ -1,5 +1,6 @@
 #include "render/dxgi/dxgi_hook.h"
 #include "render/d3d11/d3d11_hook.h"
+#include "render/d3d9/d3d9_hook.h"
 #include "render/render_backend.h"
 #include "render/d3d11/d3d11_diagnostics.h"
 #include "core/config.h"
@@ -179,6 +180,41 @@ namespace TextureToolkit
         return adopt_swapchain(DXGIHook::get().m_orig_create_swapchain_for_hwnd(factory, pDevice, hWnd, pDesc, pFullscreenDesc, pRestrictToOutput, ppSwapChain), ppSwapChain);
     }
 
+    void DXGIHook::report_startup_verdict() const
+    {
+        const bool d3d11_device = D3D11Hook::get().device_hooked();
+        const bool d3d9_device = D3D9Hook::get().get_device() != nullptr;
+        const uint64_t frames = frames_presented() + D3D9Hook::get().frames_presented();
+
+        Logger::get().info(Logger::fmt(
+            "[Startup] After 20s: D3D11 device %s, D3D9 device %s, Present hooked %s, frames seen %llu.",
+            d3d11_device ? "yes" : "no", d3d9_device ? "yes" : "no",
+            present_installed() ? "yes" : "no", static_cast<unsigned long long>(frames)));
+
+        if (!d3d11_device && !d3d9_device)
+        {
+            Logger::get().warn("[Startup] No Direct3D 9 or 11 device was created. The game most likely renders "
+                               "with an API this does not hook -- DirectX 8, 10 or 12, or Vulkan.");
+            return;
+        }
+
+        if (frames == 0)
+        {
+            Logger::get().warn("[Startup] A device exists but no frame has come through our Present. Another "
+                               "overlay loaded after us may own it, or the game has not started rendering.");
+            return;
+        }
+
+        if (ConfigManager::get().get_config().enable_overlay && !D3D11Hook::get().overlay_ready() && !d3d9_device)
+        {
+            Logger::get().warn("[Startup] Frames are going by but the overlay never initialised; the panel will "
+                               "not appear.");
+            return;
+        }
+
+        Logger::get().info("[Startup] Everything the panel needs is in place.");
+    }
+
     void DXGIHook::bootstrap_present()
     {
 
@@ -201,10 +237,21 @@ namespace TextureToolkit
             return running();
         };
 
+        bool reported = false;
+
         for (int i = 0; i < 600; ++i) // ~60s budget for the game to start rendering
         {
             if (!running())
                 return;
+
+            // Said once, whether or not the fallback below ever runs: this thread is the only
+            // place that knows the game has had time to show its hand.
+            if (i == 200 && !reported)
+            {
+                reported = true;
+                report_startup_verdict();
+            }
+
             if (present_installed())
                 return; // a real swapchain got hooked the normal way; no dummy needed
             if (D3D11Hook::get().device_hooked())
@@ -273,6 +320,8 @@ namespace TextureToolkit
 
     HRESULT STDMETHODCALLTYPE DXGIHook::Hooked_Present(IDXGISwapChain *swapchain, UINT SyncInterval, UINT Flags)
     {
+        get().m_frames.fetch_add(1, std::memory_order_relaxed);
+
 
         // Note which swapchain is presenting, but do NOT skip rendering for it: a game can present
         // more than one, and drawing into every one that presents is what makes the overlay land on
