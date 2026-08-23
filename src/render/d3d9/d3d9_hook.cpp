@@ -2,7 +2,7 @@
 #include "render/render_backend.h"
 #include "core/hook_manager.h"
 #include "core/iat_hook.h"
-#include "render/d3d9/d3d9_textures.h"
+#include "render/d3d9/d3d9_texture_manager.h"
 #include "ui/overlay.h"
 #include "core/config.h"
 #include "input/input_hook.h"

@@ -6,7 +6,7 @@
 #include "core/config.h"
 #include "core/logger.h"
 #include "texture/texture_manager.h"
-#include "render/d3d11/d3d11_textures.h"
+#include "render/d3d11/d3d11_texture_manager.h"
 
 #include <atomic>
 #include <windows.h>

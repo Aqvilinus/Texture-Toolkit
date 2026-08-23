@@ -76,10 +76,10 @@ set(SOURCES
     src/input/input_hook.cpp
     src/Main.cpp
     src/render/d3d11/d3d11_hook.cpp
-    src/render/d3d11/d3d11_texmgr.cpp
+    src/render/d3d11/d3d11_texture_manager.cpp
     src/render/d3d9/d3d9_format.cpp
     src/render/d3d9/d3d9_hook.cpp
-    src/render/d3d9/d3d9_texmgr.cpp
+    src/render/d3d9/d3d9_texture_manager.cpp
     src/render/dxgi/dxgi_format.cpp
     src/render/dxgi/dxgi_hook.cpp
     src/render/render_backend.cpp

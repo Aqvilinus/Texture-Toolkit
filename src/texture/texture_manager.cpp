@@ -1,7 +1,7 @@
 #include <charconv>
 #include "texture/texture_manager.h"
-#include "render/d3d11/d3d11_textures.h"
-#include "render/d3d9/d3d9_textures.h"
+#include "render/d3d11/d3d11_texture_manager.h"
+#include "render/d3d9/d3d9_texture_manager.h"
 #include "render/render_backend.h"
 #include "render/dxgi/dxgi_format.h"
 #include "core/config.h"
